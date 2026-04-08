@@ -193,6 +193,10 @@ export type RerankDocument = {
 // HuggingFace model URIs for node-llama-cpp
 // Format: hf:<user>/<repo>/<file>
 // Override via QMD_EMBED_MODEL env var (e.g. hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf)
+// Default: embeddinggemma-300M (768d) for local GGUF embed via node-llama-cpp
+// Qwen3-Embedding-8B is too large for in-process GGUF (8GB, causes OOM on M2 Pro)
+// Use QMD_EMBED_MODEL env var or edit here to override.
+// For 4096d semantic recall, use OpenClaw memory_search with qwen3-embedding via Ollama.
 const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
 const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
 // const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf";

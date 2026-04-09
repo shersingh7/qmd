@@ -1,0 +1,23 @@
+INFO:     Started server process [15186]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+2026-04-09 15:37:24,809 INFO qmd.mlx_server: Loading MLX embedding model from /Users/shersingh/.cache/huggingface/hub/models--mlx-community--Qwen3-Embedding-8B-4bit-DWQ/snapshots/885642d6b98742ea03b77a1673579c92ca961efd
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+2026-04-09 15:37:28,125 INFO qmd.mlx_server: MLX embedding model ready (dim=4096, cache=hit)
+INFO:     127.0.0.1:51277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51279 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51280 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51312 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51292 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51315 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51369 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51439 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51444 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51445 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51459 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51466 - "POST /v1/embeddings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51549 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51561 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51614 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for background tasks to complete. (CTRL+C to force quit)

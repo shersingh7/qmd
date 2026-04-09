@@ -367,7 +367,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   // else: DB-only mode — no external config, use existing store_collections
 
   // Create LLM instance based on QMD_EMBED_PROVIDER env var
-  // - "mlx": Use the external MLX embedding server for high-dimensional embeddings
+  // - "mlx": Use the external MLX server for ALL operations (embed, rerank, generate)
   // - default: Use node-llama-cpp in-process (small models, works offline)
   const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
   let llm: InstanceType<typeof LlamaCpp> | MlxLLM;
@@ -378,7 +378,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       generateModel: config?.models?.generate,
       rerankModel: config?.models?.rerank,
     });
-    process.stderr.write(`Using MLX embeddings (${process.env.QMD_EMBED_MODEL || 'mlx-community/Qwen3-Embedding-8B-4bit-DWQ'})\n`);
+    process.stderr.write(`Using MLX for ALL operations (embed + rerank + generate) via ${process.env.QMD_MLX_BASE_URL || 'http://127.0.0.1:8080'}\n`);
   } else {
     llm = new LlamaCpp({
       embedModel: config?.models?.embed,

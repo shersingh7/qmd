@@ -2,7 +2,7 @@
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking with local models. The default stack uses node-llama-cpp with GGUF models, and Apple Silicon setups can optionally run 4096d MLX embeddings through an external server.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -68,6 +68,44 @@ qmd query "error handling" --all --files --min-score 0.4
 # Retrieve full document content
 qmd get "docs/api-reference.md" --full
 ```
+
+### MLX Embeddings on Apple Silicon
+
+QMD can use an external MLX embedding server instead of the old Ollama embedding path. This is useful on Apple Silicon because MLX runs natively on Metal, avoids GGUF embedding compromises, and gives you 4096-dimensional embeddings from `mlx-community/Qwen3-Embedding-8B-4bit-DWQ` in about 4 GB of model weights.
+
+Start the server:
+
+```sh
+./src/mlx-server/start.sh
+```
+
+Or run it directly with custom settings:
+
+```sh
+MLX_MODEL_PATH=mlx-community/Qwen3-Embedding-8B-4bit-DWQ \
+MLX_HOST=127.0.0.1 \
+MLX_PORT=8080 \
+python src/mlx-server/server.py
+```
+
+Point QMD at the server and generate embeddings:
+
+```sh
+QMD_EMBED_PROVIDER=mlx qmd embed
+```
+
+Useful environment variables:
+
+```sh
+QMD_EMBED_PROVIDER=mlx
+QMD_MLX_BASE_URL=http://127.0.0.1:8080
+QMD_MLX_BATCH_SIZE=32
+```
+
+The server exposes:
+- `GET /health`
+- `POST /v1/embeddings`
+- `POST /embed_batch`
 
 ### MCP Server
 
@@ -916,9 +954,14 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
 Models are configured in `src/llm.ts` as HuggingFace URIs:
 
 ```typescript
+// Default (small GGUF models for in-process node-llama-cpp)
 const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
 const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
 const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
+
+// For 4096d embeddings on Apple Silicon, use MLX (see MLX Embeddings section above)
+// Set QMD_EMBED_PROVIDER=mlx and use:
+//   QMD_EMBED_MODEL=mlx-community/Qwen3-Embedding-8B-4bit-DWQ
 ```
 
 ### EmbeddingGemma Prompt Format
@@ -938,6 +981,89 @@ Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross
 ### Qwen3 (Query Expansion)
 
 Used for generating query variations via `LlamaChatSession`.
+
+## MLX Embeddings (Apple Silicon)
+
+QMD supports high-quality 4096-dimensional embeddings via Apple's MLX framework, running natively on M1/M2/M3/M4 chips with Metal GPU acceleration.
+
+**Model:** [Qwen3-Embedding-8B-4bit-DWQ](https://huggingface.co/mlx-community/Qwen3-Embedding-8B-4bit-DWQ)
+- 8 billion parameters, 4-bit quantization
+- ~4GB memory footprint
+- 4096 output dimensions
+- ~87% on MTEB benchmark
+
+### Why MLX?
+
+| | MLX (this setup) | Ollama (GGUF) |
+|---|---|---|
+| GPU | Native Metal | Vulkan/CPU fallback |
+| Speed | ~2-3x faster on M-series | Slower |
+| Memory | ~4GB (4-bit) | ~8GB (Q8) |
+| Process isolation | Yes (separate server) | Ollama daemon |
+| Setup complexity | Requires Python server | Simpler |
+
+### Setup
+
+**1. Start the MLX server:**
+
+```bash
+# Option A: Use the startup script
+bash src/mlx-server/start.sh
+
+# Option B: Manual
+cd src/mlx-server
+pip3 install -r requirements.txt  # if needed
+python3 server.py
+```
+
+The server starts on `http://127.0.0.1:8080` and loads the model on first request.
+
+**2. Run QMD with MLX embeddings:**
+
+```bash
+export QMD_EMBED_PROVIDER=mlx
+qmd embed --collection mycollection
+```
+
+Or with the CLI:
+
+```bash
+QMD_EMBED_PROVIDER=mlx qmd embed --collection mycollection
+```
+
+**3. Search using MLX embeddings:**
+
+```bash
+QMD_EMBED_PROVIDER=mlx qmd search "your query here"
+```
+
+### Configuration
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `QMD_EMBED_PROVIDER` | `llama` | Set to `mlx` to enable MLX embeddings |
+| `QMD_MLX_BASE_URL` | `http://127.0.0.1:8080` | MLX server URL |
+| `QMD_MLX_BATCH_SIZE` | `32` | Chunks per embed batch |
+| `QMD_EMBED_MODEL` | `mlx-community/Qwen3-Embedding-8B-4bit-DWQ` | Model name |
+| `MLX_PORT` | `8080` | Server port |
+| `MLX_HOST` | `127.0.0.1` | Server host |
+
+### Troubleshooting
+
+**"MLX server is not running" error:**
+```bash
+# Verify the server is running
+curl http://127.0.0.1:8080/health
+
+# Restart the server
+bash src/mlx-server/start.sh
+```
+
+**Slow first query:**
+The model loads on first embedding request (~30-60s warm-up on M3 Max). Subsequent queries are fast.
+
+**Out of memory:**
+Reduce `QMD_MLX_BATCH_SIZE` (e.g., to 16 or 8) to lower peak memory usage.
 
 ## License
 

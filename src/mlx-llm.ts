@@ -280,7 +280,7 @@ export class MlxLLM implements LLM {
         const response = await this.fetchEmbeddings(batch, model);
         const batchResults = this.mapEmbeddingsResponse(response, batch.length, model);
         for (let i = 0; i < batchResults.length; i++) {
-          results[start + i] = batchResults[i];
+          results[start + i] = batchResults[i] ?? null;
         }
       } catch (error) {
         console.error(`MLX batch embedding error (batch starting at ${start}):`, error);

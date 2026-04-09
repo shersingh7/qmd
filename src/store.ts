@@ -27,6 +27,7 @@ import {
   type RerankDocument,
   type ILLMSession,
 } from "./llm.js";
+import { OllamaLLM } from "./ollama-llm.js";
 import type {
   NamedCollection,
   Collection,
@@ -62,7 +63,7 @@ export const CHUNK_WINDOW_CHARS = CHUNK_WINDOW_TOKENS * 4;  // 800 chars
  * Get the LlamaCpp instance for a store — prefers the store's own instance,
  * falls back to the global singleton.
  */
-function getLlm(store: Store): LlamaCpp {
+function getLlm(store: Store): LlamaCpp | OllamaLLM {
   return store.llm ?? getDefaultLlamaCpp();
 }
 
@@ -1076,8 +1077,8 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
 export type Store = {
   db: Database;
   dbPath: string;
-  /** Optional LlamaCpp instance for this store (overrides the global singleton) */
-  llm?: LlamaCpp;
+  /** Optional LlamaCpp or OllamaLLM instance for this store (overrides the global singleton) */
+  llm?: LlamaCpp | OllamaLLM;
   close: () => void;
   ensureVecTable: (dimensions: number) => void;
 
@@ -1390,6 +1391,78 @@ function getEmbeddingDocsForBatch(db: Database, batch: PendingEmbeddingDoc[]): E
 }
 
 /**
+ * Generate vector embeddings for documents using Ollama API.
+ * Bypasses node-llama-cpp session management entirely.
+ * Ollama handles its own model lifecycle and memory.
+ */
+async function generateEmbeddingsViaOllama(
+  ollamaLlm: OllamaLLM,
+  store: Store,
+  db: Database,
+  docsToEmbed: { hash: string; bytes: number; path: string }[],
+  options: EmbedOptions | undefined,
+  embedModelUri: string,
+  now: string,
+): Promise<EmbedResult> {
+  const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
+  const encoder = new TextEncoder();
+  const BATCH_SIZE = 32;
+  const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+  const totalDocs = docsToEmbed.length;
+  const startTime = Date.now();
+  let chunksEmbedded = 0;
+  let errors = 0;
+  let bytesProcessed = 0;
+  let totalChunks = 0;
+  let vectorTableInitialized = false;
+  const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
+  for (const batchMeta of batches) {
+    const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
+    const batchChunks: ChunkItem[] = [];
+    const batchBytes = batchMeta.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+    for (const doc of batchDocs) {
+      if (!doc.body.trim()) continue;
+      const title = extractTitle(doc.body, doc.path);
+      const chunks = await chunkDocumentByTokens(doc.body, undefined, undefined, undefined, doc.path, options?.chunkStrategy);
+      for (let seq = 0; seq < chunks.length; seq++) {
+        batchChunks.push({ hash: doc.hash, title, text: chunks[seq]!.text, seq, pos: chunks[seq]!.pos, tokens: chunks[seq]!.tokens, bytes: encoder.encode(chunks[seq]!.text).length });
+      }
+    }
+    totalChunks += batchChunks.length;
+    if (batchChunks.length === 0) { bytesProcessed += batchBytes; options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors }); continue; }
+    if (!vectorTableInitialized) {
+      const firstChunk = batchChunks[0]!;
+      const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
+      const firstResult = await ollamaLlm.embed(firstText);
+      if (!firstResult) throw new Error("Failed to get Ollama embedding dimensions");
+      store.ensureVecTable(firstResult.embedding.length);
+      vectorTableInitialized = true;
+    }
+    for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, batchChunks.length);
+      const chunkBatch = batchChunks.slice(batchStart, batchEnd);
+      const texts = chunkBatch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
+      try {
+        const embeddings = await ollamaLlm.embedBatch(texts);
+        for (let i = 0; i < chunkBatch.length; i++) {
+          const chunk = chunkBatch[i]!;
+          const embedding = embeddings[i];
+          if (embedding) { insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), embedModelUri, now); chunksEmbedded++; }
+          else { errors++; }
+        }
+        bytesProcessed += chunkBatch.reduce((sum, c) => sum + c.bytes, 0);
+      } catch (err) {
+        errors += chunkBatch.length;
+        console.error(`Ollama batch embedding error:`, err);
+      }
+      options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
+    }
+  }
+  const durationMs = Date.now() - startTime;
+  return { docsProcessed: totalDocs, chunksEmbedded, errors, durationMs };
+}
+
+/**
  * Generate vector embeddings for documents that need them.
  * Pure function — no console output, no db lifecycle management.
  * Uses the store's LlamaCpp instance if set, otherwise the global singleton.
@@ -1422,7 +1495,18 @@ export async function generateEmbeddings(
   const embedModelUri = llm.embedModelName;
 
   // Create a session manager for this llm instance
-  const result = await withLLMSessionForLlm(llm, async (session) => {
+  // For OllamaLLM, call embed directly (bypass session - Ollama manages its own sessions)
+  const isOllama = llm instanceof OllamaLLM;
+
+  if (isOllama) {
+    // Ollama path: direct API calls, no session management needed
+    const result = await generateEmbeddingsViaOllama(llm, store, db, docsToEmbed, options, embedModelUri, now);
+    return result;
+  }
+
+  // Standard path: use LlamaCpp session for in-process embeddings
+  const sessionLlm = llm;
+  const result = await withLLMSessionForLlm(sessionLlm, async (session) => {
     let chunksEmbedded = 0;
     let errors = 0;
     let bytesProcessed = 0;
@@ -3089,7 +3173,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // Embeddings
 // =============================================================================
 
-async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp): Promise<number[] | null> {
+async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp | OllamaLLM): Promise<number[] | null> {
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text, model) : formatDocForEmbedding(text, undefined, model);
   const result = session
@@ -3158,7 +3242,7 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | OllamaLLM): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
   const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
@@ -3197,7 +3281,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<{ file: string; score: number }[]> {
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | OllamaLLM): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 

@@ -78,6 +78,7 @@ import {
   type ChunkStrategy,
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
+import { OllamaLLM } from "../ollama-llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -118,15 +119,28 @@ function getStore(): ReturnType<typeof createStore> {
     try {
       const config = loadConfig();
       syncConfigToDb(store.db, config);
-      if (config.models) {
-        setDefaultLlamaCpp(new LlamaCpp({
-          embedModel: config.models.embed,
-          generateModel: config.models.generate,
-          rerankModel: config.models.rerank,
-        }));
-      }
     } catch {
       // Config may not exist yet — that's fine, DB works without it
+    }
+
+    // Check for Ollama embedding provider (independent of config file)
+    const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
+    if (embedProvider === 'ollama') {
+      setDefaultLlamaCpp(new OllamaLLM() as any);
+    } else {
+      // Default: use LlamaCpp with optional config
+      try {
+        const config = loadConfig();
+        if (config.models) {
+          setDefaultLlamaCpp(new LlamaCpp({
+            embedModel: config.models.embed,
+            generateModel: config.models.generate,
+            rerankModel: config.models.rerank,
+          }));
+        }
+      } catch {
+        // Config may not exist yet — that's fine
+      }
     }
   }
   return store;

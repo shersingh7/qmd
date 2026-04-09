@@ -38,7 +38,7 @@ export function isQwen3EmbeddingModel(modelUri: string): boolean {
 export function formatQueryForEmbedding(query: string, modelUri?: string): string {
   const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
   if (isQwen3EmbeddingModel(uri)) {
-    return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
+    return `Instruct: Given a search query, retrieve relevant documents\nQuery: ${query}`;
   }
   return `task: search result | query: ${query}`;
 }
@@ -52,7 +52,7 @@ export function formatDocForEmbedding(text: string, title?: string, modelUri?: s
   const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
   if (isQwen3EmbeddingModel(uri)) {
     // Qwen3-Embedding: documents are raw text, no task prefix
-    return title ? `${title}\n${text}` : text;
+    return text;
   }
   return `title: ${title || "none"} | text: ${text}`;
 }
@@ -196,7 +196,7 @@ export type RerankDocument = {
 // Default: embeddinggemma-300M (768d) for local GGUF embed via node-llama-cpp
 // Qwen3-Embedding-8B is too large for in-process GGUF (8GB, causes OOM on M2 Pro)
 // Use QMD_EMBED_MODEL env var or edit here to override.
-// For 4096d semantic recall, use OpenClaw memory_search with qwen3-embedding via Ollama.
+// For 4096d semantic recall, use the external MLX embedding server with Qwen3-Embedding.
 const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
 const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
 // const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf";

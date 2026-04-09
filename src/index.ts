@@ -67,7 +67,7 @@ import {
 import {
   LlamaCpp,
 } from "./llm.js";
-import { OllamaLLM } from "./ollama-llm.js";
+import { MlxLLM } from "./mlx-llm.js";
 import {
   setConfigSource,
   loadConfig,
@@ -367,18 +367,18 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   // else: DB-only mode — no external config, use existing store_collections
 
   // Create LLM instance based on QMD_EMBED_PROVIDER env var
-  // - "ollama": Use Ollama API for embeddings (large models, no OOM)
+  // - "mlx": Use the external MLX embedding server for high-dimensional embeddings
   // - default: Use node-llama-cpp in-process (small models, works offline)
   const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
-  let llm: InstanceType<typeof LlamaCpp> | OllamaLLM;
+  let llm: InstanceType<typeof LlamaCpp> | MlxLLM;
 
-  if (embedProvider === 'ollama') {
-    llm = new OllamaLLM({
+  if (embedProvider === 'mlx') {
+    llm = new MlxLLM({
       embedModel: config?.models?.embed,
       generateModel: config?.models?.generate,
       rerankModel: config?.models?.rerank,
     });
-    process.stderr.write(`Using Ollama embeddings (${process.env.QMD_OLLAMA_EMBED_MODEL || 'qwen3-embedding'})\n`);
+    process.stderr.write(`Using MLX embeddings (${process.env.QMD_EMBED_MODEL || 'mlx-community/Qwen3-Embedding-8B-4bit-DWQ'})\n`);
   } else {
     llm = new LlamaCpp({
       embedModel: config?.models?.embed,

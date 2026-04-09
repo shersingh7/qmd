@@ -78,7 +78,7 @@ import {
   type ChunkStrategy,
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
-import { OllamaLLM } from "../ollama-llm.js";
+import { MlxLLM } from "../mlx-llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -123,10 +123,10 @@ function getStore(): ReturnType<typeof createStore> {
       // Config may not exist yet — that's fine, DB works without it
     }
 
-    // Check for Ollama embedding provider (independent of config file)
+    // Check for MLX embedding provider (independent of config file)
     const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
-    if (embedProvider === 'ollama') {
-      setDefaultLlamaCpp(new OllamaLLM() as any);
+    if (embedProvider === 'mlx') {
+      setDefaultLlamaCpp(new MlxLLM() as any);
     } else {
       // Default: use LlamaCpp with optional config
       try {
@@ -547,7 +547,7 @@ async function updateCollections(): Promise<void> {
   const storeInstance = getStore();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
-  // Clear Ollama cache on update
+  // Clear cached LLM results on update
   clearCache(db);
 
   const collections = listCollections(db);
@@ -1517,7 +1517,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
 
-  // Clear Ollama cache on index
+  // Clear cached LLM results on index
   clearCache(db);
 
   // Collection name must be provided (from YAML)

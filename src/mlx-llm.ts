@@ -271,13 +271,13 @@ export class MlxLLM implements LLM {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
-  private async fetchFromServer(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+  private async fetchFromServer(path: string, body: unknown, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
     return await this.withRetry(`MLX ${path}`, async () => {
       const response = await fetchWithTimeout(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+        timeoutMs: timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
         externalSignal: signal,
       });
 
@@ -331,7 +331,7 @@ export class MlxLLM implements LLM {
         const response = await this.fetchFromServer("/v1/embeddings", {
           input: batch,
           model,
-        }, options.signal) as MlxEmbeddingsResponse;
+        }, options.signal, 300_000) as MlxEmbeddingsResponse;
 
         const data = response.data ?? [];
         for (const item of data) {

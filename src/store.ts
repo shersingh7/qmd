@@ -739,6 +739,7 @@ function initializeDatabase(db: Database): void {
   }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA busy_timeout = 5000");
 
   // Drop legacy tables that are now managed in YAML
   db.exec(`DROP TABLE IF EXISTS path_contexts`);
@@ -1331,11 +1332,14 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
 }
 
 function getPendingEmbeddingDocs(db: Database): PendingEmbeddingDoc[] {
+  // Check that ALL seq values exist for a hash, not just seq=0.
+  // The old query (AND v.seq = 0) would mark a doc as "done" if only
+  // seq=0 was embedded before a crash — seq 1,2,3 would never get embedded.
   return db.prepare(`
     SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
+    LEFT JOIN content_vectors v ON d.hash = v.hash
     WHERE d.active = 1 AND v.hash IS NULL
     GROUP BY d.hash
     ORDER BY MIN(d.path)
@@ -1414,6 +1418,8 @@ async function generateEmbeddingsViaMlx(
   let bytesProcessed = 0;
   let totalChunks = 0;
   let vectorTableInitialized = false;
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 3;
   const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
 
   for (const batchMeta of batches) {
@@ -1441,6 +1447,15 @@ async function generateEmbeddingsViaMlx(
     const texts = batchChunks.map((chunk) => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
     try {
       const embeddings = await mlxLlm.embedBatch(texts);
+
+      // Count null vs non-null results
+      const nullCount = embeddings.filter(e => e === null).length;
+      if (nullCount > 0 && nullCount === embeddings.length) {
+        // ALL embeddings in this batch are null — the server returned nothing usable.
+        // This is fatal: treat as an immediate abort rather than continuing to waste cycles.
+        throw new Error(`MLX server returned no valid embeddings for batch of ${texts.length} texts. This usually means the server is unresponsive or the model failed to load. Aborting embed.`);
+      }
+
       const firstEmbedding = embeddings.find((embedding): embedding is NonNullable<typeof embedding> => embedding !== null);
 
       if (!vectorTableInitialized) {
@@ -1461,7 +1476,17 @@ async function generateEmbeddingsViaMlx(
           errors++;
         }
       }
+      // At least one embedding succeeded — server is alive, reset consecutive failure counter
+      consecutiveFailures = 0;
     } catch (err) {
+      // Re-throw fatal errors (all-null batches = server is broken)
+      if (err instanceof Error && err.message.includes('Aborting embed')) {
+        throw err;
+      }
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        throw new Error(`MLX server failed ${MAX_CONSECUTIVE_FAILURES} batches in a row. Last error: ${formatError(err)}. Aborting embed — check that the MLX server is running and responsive.`);
+      }
       errors += batchChunks.length;
       console.error("MLX batch embedding error:", err);
     }
@@ -3203,7 +3228,7 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
     SELECT d.hash, c.doc as body, MIN(d.path) as path
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
+    LEFT JOIN content_vectors v ON d.hash = v.hash
     WHERE d.active = 1 AND v.hash IS NULL
     GROUP BY d.hash
   `).all() as { hash: string; body: string; path: string }[];
@@ -3239,15 +3264,21 @@ export function insertEmbedding(
 ): void {
   const hashSeq = `${hash}_${seq}`;
 
-  // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-  const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, ?, ?, ?, ?)`);
-  insertContentVectorStmt.run(hash, seq, pos, model, embeddedAt);
+  // Wrap in a transaction so a crash won't leave content_vectors written
+  // but vectors_vec missing (which would make the doc look "done" to
+  // getPendingEmbeddingDocs even though the vector data is gone).
+  const txn = db.transaction(() => {
+    // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
+    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, ?, ?, ?, ?)`);
+    insertContentVectorStmt.run(hash, seq, pos, model, embeddedAt);
 
-  // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-  const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-  const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-  deleteVecStmt.run(hashSeq);
-  insertVecStmt.run(hashSeq, embedding);
+    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
+    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+    deleteVecStmt.run(hashSeq);
+    insertVecStmt.run(hashSeq, embedding);
+  });
+  txn();
 }
 
 // =============================================================================

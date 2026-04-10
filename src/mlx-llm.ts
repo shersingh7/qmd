@@ -33,9 +33,10 @@ const DEFAULT_MLX_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_MLX_EMBED_MODEL = "mlx-community/Qwen3-Embedding-8B-4bit-DWQ";
 const DEFAULT_MLX_RERANK_MODEL = "mlx-community/Qwen3-Reranker-8B-mxfp8";
 const DEFAULT_MLX_GENERATE_MODEL = "Qwen/Qwen3-8B-MLX-4bit";
-const DEFAULT_MLX_BATCH_SIZE = 32;
+const DEFAULT_MLX_BATCH_SIZE = 16;
 const DEFAULT_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 250;
+const DEFAULT_FETCH_TIMEOUT_MS = 60_000; // 60s — prevents zombie fetch hangs
 
 // ─── Response Types ──────────────────────────────────────────────────────────
 
@@ -115,8 +116,20 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Fetch with AbortController timeout — prevents zombie connections. */
+function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = init;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const merged = { ...rest, signal: controller.signal };
+  return fetch(url, merged).finally(() => clearTimeout(timer));
+}
+
 function isConnectionRefused(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+
+  // AbortError is NOT retriable — it means we timed out or explicitly cancelled.
+  if (error.name === "AbortError") return false;
 
   const cause = error as Error & { code?: string; cause?: { code?: string; message?: string } };
   const code = cause.code ?? cause.cause?.code;
@@ -238,10 +251,11 @@ export class MlxLLM implements LLM {
 
   private async fetchFromServer(path: string, body: unknown): Promise<unknown> {
     return await this.withRetry(`MLX ${path}`, async () => {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await fetchWithTimeout(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
       });
 
       if (!response.ok) {
@@ -255,7 +269,9 @@ export class MlxLLM implements LLM {
 
   private async fetchHealth(): Promise<MlxHealthResponse> {
     return await this.withRetry("MLX health check", async () => {
-      const response = await fetch(`${this.baseUrl}/health`);
+      const response = await fetchWithTimeout(`${this.baseUrl}/health`, {
+        timeoutMs: 10_000, // health check should be fast
+      });
 
       if (!response.ok) {
         const errorText = await response.text();

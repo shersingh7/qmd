@@ -213,9 +213,36 @@ const cursor = {
   show() { process.stderr.write('\x1b[?25h'); },
 };
 
-// Ensure cursor is restored on exit
-process.on('SIGINT', () => { cursor.show(); process.exit(130); });
-process.on('SIGTERM', () => { cursor.show(); process.exit(143); });
+// Ensure cursor is restored on exit + clean up embed resources on SIGINT/SIGTERM
+let _activeEmbedDb: any = null;
+let _embedAbortController: AbortController | null = null;
+
+function registerActiveEmbed(db: any, controller: AbortController) {
+  _activeEmbedDb = db;
+  _embedAbortController = controller;
+}
+function unregisterActiveEmbed() {
+  _activeEmbedDb = null;
+  _embedAbortController = null;
+}
+
+process.on('SIGINT', () => {
+  cursor.show();
+  // If an embed is running, abort in-flight requests and checkpoint WAL
+  if (_embedAbortController) _embedAbortController.abort();
+  if (_activeEmbedDb) {
+    try { _activeEmbedDb.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+  }
+  process.exit(130);
+});
+process.on('SIGTERM', () => {
+  cursor.show();
+  if (_embedAbortController) _embedAbortController.abort();
+  if (_activeEmbedDb) {
+    try { _activeEmbedDb.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+  }
+  process.exit(143);
+});
 
 // Terminal progress bar using OSC 9;4 escape sequence (TTY only)
 const isTTY = process.stderr.isTTY;
@@ -1703,12 +1730,18 @@ async function vectorIndex(
 
   const startTime = Date.now();
 
+  // Register the DB and an AbortController with the SIGINT/SIGTERM handlers
+  // so that Ctrl+C during embed will checkpoint the WAL and abort in-flight requests.
+  const embedAbort = new AbortController();
+  registerActiveEmbed(db, embedAbort);
+
   const result = await generateEmbeddings(storeInstance, {
     force,
     model,
     maxDocsPerBatch: batchOptions?.maxDocsPerBatch,
     maxBatchBytes: batchOptions?.maxBatchBytes,
     chunkStrategy: batchOptions?.chunkStrategy,
+    signal: embedAbort.signal,
     onProgress: (info) => {
       if (info.totalBytes === 0) return;
       const percent = (info.bytesProcessed / info.totalBytes) * 100;
@@ -1731,6 +1764,9 @@ async function vectorIndex(
 
   progress.clear();
   cursor.show();
+
+  // Unregister the embed abort controller — embed is done, SIGINT can go back to defaults
+  unregisterActiveEmbed();
 
   const totalTimeSec = result.durationMs / 1000;
 

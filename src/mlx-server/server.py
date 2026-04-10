@@ -177,7 +177,8 @@ class EmbeddingService:
         import gc
         import mlx.core as mx
 
-        by_len: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = {}
+        # Tokenize all texts individually (with truncation) then collect lengths
+        tokenized: list[tuple[int, np.ndarray, np.ndarray]] = []
         for idx, text in enumerate(normalized):
             enc = self._encoder_tok(
                 [text],
@@ -190,33 +191,46 @@ class EmbeddingService:
             )
             ids = np.asarray(enc["input_ids"], dtype=np.int32)[0]
             mask = np.asarray(enc["attention_mask"], dtype=np.int32)[0]
-            by_len.setdefault(len(ids), []).append((idx, ids, mask))
             prompt_tokens += int(mask.sum())
+            tokenized.append((idx, ids, mask))
+
+        # Single padded forward pass — much faster than grouping by length.
+        # Pad all token IDs to the max length in this batch, right-pad with 0s.
+        max_len = max(len(ids) for _, ids, _ in tokenized)
+        batch_size = len(tokenized)
+
+        batch_ids = np.zeros((batch_size, max_len), dtype=np.int32)
+        batch_masks = np.zeros((batch_size, max_len), dtype=np.int32)
+        last_indices = np.zeros(batch_size, dtype=np.int32)
+
+        for i, (_, ids, mask) in enumerate(tokenized):
+            seq_len = len(ids)
+            batch_ids[i, :seq_len] = ids
+            batch_masks[i, :seq_len] = mask
+            # Last valid token index = position of last non-padding token
+            last_indices[i] = int(mask.sum()) - 1
 
         with self.lock:
-            for seq_len, items in sorted(by_len.items()):
-                batch_ids = np.stack([ids for _, ids, _ in items])
-                batch_masks = np.stack([mask for _, _, mask in items])
-                mx_ids = mx.array(batch_ids)
-                hidden = self.backbone(mx_ids)
-                hidden_f32 = hidden.astype(mx.float32)
-                mx.eval(hidden_f32)
-                hidden_np = np.array(hidden_f32)
+            mx_ids = mx.array(batch_ids)
+            hidden = self.backbone(mx_ids)
+            hidden_f32 = hidden.astype(mx.float32)
+            mx.eval(hidden_f32)
+            hidden_np = np.array(hidden_f32)
 
-                # Explicitly free MLX intermediate tensors to prevent
-                # gradual memory growth over long embed runs
-                del mx_ids, hidden, hidden_f32, batch_ids, batch_masks
-                mx.eval()  # evaluate any remaining lazy ops
-                gc.collect()
+            # Explicitly free MLX intermediate tensors to prevent
+            # gradual memory growth over long embed runs
+            del mx_ids, hidden, hidden_f32, batch_ids, batch_masks
+            mx.eval()  # evaluate any remaining lazy ops
+            gc.collect()
 
-                last_indices = np.array([int(m.sum()) - 1 for m in items], dtype=np.int32)
-                embeddings = hidden_np[np.arange(len(items)), last_indices, :]
-                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-                embeddings = embeddings / np.clip(norms, 1e-12, None)
-                if self.embedding_dim is None:
-                    self.embedding_dim = int(embeddings.shape[-1])
-                for local_i, (orig_idx, _, _) in enumerate(items):
-                    results[orig_idx] = embeddings[local_i].astype(np.float32).tolist()
+            # Extract the last valid token's hidden state for each text
+            embeddings = hidden_np[np.arange(batch_size), last_indices, :]
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / np.clip(norms, 1e-12, None)
+            if self.embedding_dim is None:
+                self.embedding_dim = int(embeddings.shape[-1])
+            for i, (orig_idx, _, _) in enumerate(tokenized):
+                results[orig_idx] = embeddings[i].astype(np.float32).tolist()
 
         return EmbeddingBatch(
             embeddings=[e if e is not None else [] for e in results],

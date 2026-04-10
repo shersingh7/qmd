@@ -70,6 +70,7 @@ export interface Database {
   prepare(sql: string): Statement;
   loadExtension(path: string): void;
   close(): void;
+  transaction<T>(fn: () => T): () => T;
 }
 
 export interface Statement {

@@ -1294,6 +1294,8 @@ export type EmbedOptions = {
   maxBatchBytes?: number;
   chunkStrategy?: ChunkStrategy;
   onProgress?: (info: EmbedProgress) => void;
+  /** AbortSignal for graceful shutdown (SIGINT/SIGTERM will fire this) */
+  signal?: AbortSignal;
 };
 
 type PendingEmbeddingDoc = {
@@ -1407,6 +1409,7 @@ async function generateEmbeddingsViaMlx(
   options: EmbedOptions | undefined,
   embedModelUri: string,
   now: string,
+  signal?: AbortSignal,
 ): Promise<EmbedResult> {
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
@@ -1446,7 +1449,7 @@ async function generateEmbeddingsViaMlx(
 
     const texts = batchChunks.map((chunk) => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
     try {
-      const embeddings = await mlxLlm.embedBatch(texts);
+      const embeddings = await mlxLlm.embedBatch(texts, { signal });
 
       // Count null vs non-null results
       const nullCount = embeddings.filter(e => e === null).length;
@@ -1485,7 +1488,8 @@ async function generateEmbeddingsViaMlx(
       }
       consecutiveFailures++;
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        throw new Error(`MLX server failed ${MAX_CONSECUTIVE_FAILURES} batches in a row. Last error: ${formatError(err)}. Aborting embed — check that the MLX server is running and responsive.`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        throw new Error(`MLX server failed ${MAX_CONSECUTIVE_FAILURES} batches in a row. Last error: ${errMsg}. Aborting embed — check that the MLX server is running and responsive.`);
       }
       errors += batchChunks.length;
       console.error("MLX batch embedding error:", err);
@@ -1493,6 +1497,28 @@ async function generateEmbeddingsViaMlx(
 
     bytesProcessed += batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
     options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
+
+    // Periodic progress log for non-TTY / background runs (every 10 batches)
+    // TTY mode uses the progress bar — this is for when stdout is piped or redirected.
+    // Also reuse batchIndex for WAL checkpoint (every 100 batches).
+    const batchIndex = batches.indexOf(batchMeta);
+    if (batchIndex > 0 && batchIndex % 10 === 0) {
+      const pct = totalChunks > 0 ? ((chunksEmbedded / totalChunks) * 100).toFixed(1) : "0";
+      const elapsed = (Date.now() - startTime) / 1000;
+      const throughput = elapsed > 0 ? (chunksEmbedded / elapsed).toFixed(1) : "?";
+      const etaSec = elapsed > 2 && chunksEmbedded > 0 ? ((totalChunks - chunksEmbedded) * elapsed / chunksEmbedded) : -1;
+      const etaStr = etaSec > 0 ? `${Math.floor(etaSec / 60)}m${Math.floor(etaSec % 60)}s` : "...";
+      console.error(`[embed] ${chunksEmbedded}/${totalChunks} chunks (${pct}%), ${errors} errors, ${throughput} chunks/s, ETA ${etaStr}`);
+    }
+
+    // Periodic WAL checkpoint to prevent unbounded WAL growth during long embed runs
+    if (batchIndex > 0 && batchIndex % 100 === 0) {
+      try {
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        // Non-fatal — checkpoint failure shouldn't stop the embed
+      }
+    }
   }
 
   const durationMs = Date.now() - startTime;
@@ -1537,7 +1563,7 @@ export async function generateEmbeddings(
 
   if (isMlx) {
     // MLX path: direct API calls, no session management needed
-    const result = await generateEmbeddingsViaMlx(llm, store, db, docsToEmbed, options, embedModelUri, now);
+    const result = await generateEmbeddingsViaMlx(llm, store, db, docsToEmbed, options, embedModelUri, now, options?.signal);
     return result;
   }
 

@@ -116,13 +116,35 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Fetch with AbortController timeout — prevents zombie connections. */
-function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
-  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, ...rest } = init;
+/** Fetch with AbortController timeout — prevents zombie connections.
+ *  Accepts an optional external AbortSignal (e.g. from SIGINT) so that
+ *  in-flight requests can be cancelled immediately on shutdown. */
+function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number; externalSignal?: AbortSignal } = {}): Promise<Response> {
+  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, externalSignal, ...rest } = init;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  // If the external signal fires (SIGINT), abort our fetch immediately
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timer);
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        controller.abort();
+      }, { once: true });
+    }
+  }
+
   const merged = { ...rest, signal: controller.signal };
-  return fetch(url, merged).finally(() => clearTimeout(timer));
+  return fetch(url, merged).finally(() => {
+    clearTimeout(timer);
+    // Clean up the listener if fetch completed before external signal fired
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', () => {});
+    }
+  });
 }
 
 function isConnectionRefused(error: unknown): boolean {
@@ -249,13 +271,14 @@ export class MlxLLM implements LLM {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
-  private async fetchFromServer(path: string, body: unknown): Promise<unknown> {
+  private async fetchFromServer(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
     return await this.withRetry(`MLX ${path}`, async () => {
       const response = await fetchWithTimeout(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
         timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+        externalSignal: signal,
       });
 
       if (!response.ok) {
@@ -289,7 +312,7 @@ export class MlxLLM implements LLM {
     return result ?? null;
   }
 
-  async embedBatch(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
+  async embedBatch(texts: string[], options: EmbedOptions & { signal?: AbortSignal } = {}): Promise<(EmbeddingResult | null)[]> {
     if (texts.length === 0) return [];
 
     const model = this.resolveEmbedModel(options);
@@ -299,11 +322,16 @@ export class MlxLLM implements LLM {
     for (let start = 0; start < formattedTexts.length; start += this.batchSize) {
       const batch = formattedTexts.slice(start, start + this.batchSize);
 
+      // If SIGINT was received, bail out immediately
+      if (options.signal?.aborted) {
+        throw new Error('Embed aborted by signal (SIGINT/SIGTERM)');
+      }
+
       try {
         const response = await this.fetchFromServer("/v1/embeddings", {
           input: batch,
           model,
-        }) as MlxEmbeddingsResponse;
+        }, options.signal) as MlxEmbeddingsResponse;
 
         const data = response.data ?? [];
         for (const item of data) {

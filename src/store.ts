@@ -1448,6 +1448,26 @@ async function generateEmbeddingsViaMlx(
     }
 
     const texts = batchChunks.map((chunk) => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
+
+    // ── Doc-level batch RAM monitoring ────────────────────────────
+    // Estimate memory footprint for this batch to help diagnose OOM
+    // issues on long embed runs. Embedding dim × float32 × chunk count
+    // gives the output array size; add input text bytes for total.
+    {
+      const estDim = 4096; // Qwen3-Embedding-8B hidden size
+      const estEmbedBytes = batchChunks.length * estDim * 4; // float32
+      const estInputBytes = texts.reduce((s, t) => s + new TextEncoder().encode(t).length, 0);
+      const estTotalMB = (estEmbedBytes + estInputBytes) / (1024 * 1024);
+      const batchIdx = batches.indexOf(batchMeta);
+      if (batchIdx % 10 === 0 || estTotalMB > 200) {
+        console.error(
+          `[embed] Batch ${batchIdx}: ${batchChunks.length} chunks, ` +
+          `~${estTotalMB.toFixed(1)}MB est RAM ` +
+          `(embed=${(estEmbedBytes / (1024 * 1024)).toFixed(1)}MB, ` +
+          `input=${(estInputBytes / (1024 * 1024)).toFixed(1)}MB)`
+        );
+      }
+    }
     try {
       const embeddings = await mlxLlm.embedBatch(texts, { signal });
 

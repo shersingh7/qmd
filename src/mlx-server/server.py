@@ -128,6 +128,9 @@ class EmbeddingService:
         self._encoder_tok: Any = None
         self.lock = threading.Lock()
         self.started_at = time.time()
+        # Thermal throttle detection: track per-batch latency
+        self._baseline_latency_s: float | None = None
+        self._thermal_pause_s = 0.5  # Pause duration when throttled
 
     def start_loading(self) -> None:
         t = threading.Thread(target=self._load, name="mlx-embed-loader", daemon=True)
@@ -211,6 +214,7 @@ class EmbeddingService:
             last_indices[i] = int(mask.sum()) - 1
 
         with self.lock:
+            t0 = time.monotonic()
             mx_ids = mx.array(batch_ids)
             hidden = self.backbone(mx_ids)
             hidden_f32 = hidden.astype(mx.float32)
@@ -231,6 +235,22 @@ class EmbeddingService:
                 self.embedding_dim = int(embeddings.shape[-1])
             for i, (orig_idx, _, _) in enumerate(tokenized):
                 results[orig_idx] = embeddings[i].astype(np.float32).tolist()
+
+            elapsed = time.monotonic() - t0
+
+        # ── Thermal throttle detection ──────────────────────────────────
+        # Measure latency per batch. If >2x the baseline (first successful
+        # batch), Apple Silicon likely hit thermal limits. Pause briefly so
+        # the SoC can cool down and avoid cascading slowness.
+        if self._baseline_latency_s is None:
+            self._baseline_latency_s = elapsed
+            LOGGER.info("Embed baseline latency: %.3fs for %d texts", elapsed, batch_size)
+        elif elapsed > self._baseline_latency_s * 2:
+            LOGGER.warning(
+                "Thermal throttle detected: %.3fs > 2x baseline %.3fs — pausing %.1fs",
+                elapsed, self._baseline_latency_s, self._thermal_pause_s,
+            )
+            time.sleep(self._thermal_pause_s)
 
         return EmbeddingBatch(
             embeddings=[e if e is not None else [] for e in results],
@@ -258,6 +278,7 @@ class RerankerService:
         self.tokenizer: Any = None
         self.lock = threading.Lock()
         self._load_lock = threading.Lock()  # Prevents concurrent start_loading() calls
+        self._ready_event = threading.Event()   # Set when loading completes (ok or error)
         self.started_at = time.time()
 
     def start_loading(self) -> None:
@@ -288,6 +309,12 @@ class RerankerService:
             self.status = "error"
             self.error = f"{type(exc).__name__}: {exc}"
             LOGGER.exception("Failed to load MLX reranker model")
+        finally:
+            self._ready_event.set()
+
+    def wait_ready(self, timeout: float = 300) -> bool:
+        """Wait for model to finish loading. Returns True if ready, False on timeout."""
+        return self._ready_event.wait(timeout=timeout)
 
     def assert_ready(self) -> None:
         if self.status == "error":
@@ -363,6 +390,7 @@ class GenerateService:
         self.tokenizer: Any = None
         self.lock = threading.Lock()
         self._load_lock = threading.Lock()  # Prevents concurrent start_loading() calls
+        self._ready_event = threading.Event()   # Set when loading completes (ok or error)
         self.started_at = time.time()
 
     def start_loading(self) -> None:
@@ -393,6 +421,12 @@ class GenerateService:
             self.status = "error"
             self.error = f"{type(exc).__name__}: {exc}"
             LOGGER.exception("Failed to load MLX generate model")
+        finally:
+            self._ready_event.set()
+
+    def wait_ready(self, timeout: float = 300) -> bool:
+        """Wait for model to finish loading. Returns True if ready, False on timeout."""
+        return self._ready_event.wait(timeout=timeout)
 
     def assert_ready(self) -> None:
         if self.status == "error":
@@ -551,6 +585,57 @@ async def health() -> dict[str, Any]:
     return out
 
 
+class TokenizeRequest(BaseModel):
+    text: str | list[str] = Field(..., description="Text or list of texts to tokenize")
+    model: str | None = None
+
+
+@app.post("/v1/tokenize")
+async def tokenize_texts(req: TokenizeRequest) -> dict[str, Any]:
+    """Tokenize text using the embedding model's tokenizer.
+
+    Returns token counts for accurate chunking — replaces the
+    pseudo-tokenization (text.length/4) in the TS client.
+    """
+    texts = [req.text] if isinstance(req.text, str) else req.text
+    if not texts:
+        raise HTTPException(400, "At least one text is required")
+
+    if EMBED_SERVICE.status != "ok":
+        raise HTTPException(503, f"Embedding model not ready (status={EMBED_SERVICE.status})")
+
+    try:
+        results = await asyncio.to_thread(_tokenize_sync, texts)
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    return {
+        "object": "list",
+        "data": [{"index": i, "tokens": t} for i, t in enumerate(results)],
+        "model": req.model or EMBED_SERVICE.model_ref,
+    }
+
+
+def _tokenize_sync(texts: list[str]) -> list[list[int]]:
+    """Synchronous tokenizer call — runs in thread pool."""
+    tok = EMBED_SERVICE._encoder_tok
+    if tok is None:
+        raise RuntimeError("Tokenizer not loaded")
+    results: list[list[int]] = []
+    for text in texts:
+        enc = tok(
+            [text],
+            add_special_tokens=False,
+            truncation=True,
+            max_length=EMBED_SERVICE.max_seq_len,
+        )
+        ids = enc["input_ids"]
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        results.append(ids[0] if isinstance(ids, list) and len(ids) > 0 else list(ids))
+    return results
+
+
 @app.post("/v1/embeddings")
 async def create_embeddings(req: EmbedRequest) -> dict[str, Any]:
     if req.input_count > MAX_EMBED_INPUT_SIZE:
@@ -585,9 +670,13 @@ async def create_embeddings(req: EmbedRequest) -> dict[str, Any]:
 
 @app.post("/v1/rerank")
 async def rerank_documents(req: RerankRequest) -> dict[str, Any]:
-    # Lazy-load reranker on first request
+    # Lazy-load reranker on first request — wait for load to complete
     if RERANK_SERVICE.status == "not_loaded":
         RERANK_SERVICE.start_loading()
+    if RERANK_SERVICE.status == "loading":
+        loaded = await asyncio.to_thread(RERANK_SERVICE.wait_ready, 300)
+        if not loaded:
+            raise HTTPException(504, "Reranker model loading timed out")
 
     try:
         results = await asyncio.to_thread(RERANK_SERVICE.rerank, req.query, req.documents)
@@ -605,9 +694,13 @@ async def rerank_documents(req: RerankRequest) -> dict[str, Any]:
 
 @app.post("/v1/generate")
 async def generate_text(req: GenerateRequest) -> dict[str, Any]:
-    # Lazy-load generator on first request
+    # Lazy-load generator on first request — wait for load to complete
     if GENERATE_SERVICE.status == "not_loaded":
         GENERATE_SERVICE.start_loading()
+    if GENERATE_SERVICE.status == "loading":
+        loaded = await asyncio.to_thread(GENERATE_SERVICE.wait_ready, 300)
+        if not loaded:
+            raise HTTPException(504, "Generate model loading timed out")
 
     try:
         result = await asyncio.to_thread(GENERATE_SERVICE.generate, req.prompt, req.max_tokens, req.temperature)
@@ -622,9 +715,13 @@ async def generate_text(req: GenerateRequest) -> dict[str, Any]:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest) -> dict[str, Any]:
-    # Lazy-load generator on first request
+    # Lazy-load generator on first request — wait for load to complete
     if GENERATE_SERVICE.status == "not_loaded":
         GENERATE_SERVICE.start_loading()
+    if GENERATE_SERVICE.status == "loading":
+        loaded = await asyncio.to_thread(GENERATE_SERVICE.wait_ready, 300)
+        if not loaded:
+            raise HTTPException(504, "Generate model loading timed out")
 
     try:
         result = await asyncio.to_thread(GENERATE_SERVICE.chat_completion, req.messages, req.max_tokens, req.temperature)

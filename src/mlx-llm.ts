@@ -524,8 +524,19 @@ export class MlxLLM implements LLM {
   }
 
   async tokenize(text: string): Promise<number[]> {
-    // Approximate tokenization — Qwen3 models average ~4 chars/token
-    // For precise counts, we'd need the tokenizer, but this is good enough for QMD
+    // Real tokenization via MLX server /v1/tokenize endpoint.
+    // Falls back to pseudo-tokenization if the server is unavailable.
+    try {
+      const result = await this.fetchFromServer("/v1/tokenize", { text }, undefined) as {
+        data?: Array<{ index: number; tokens: number[] }>;
+      };
+      if (result.data && result.data.length > 0 && Array.isArray(result.data[0]!.tokens)) {
+        return result.data[0]!.tokens;
+      }
+    } catch {
+      // Server unavailable — fall through to approximation
+    }
+    // Fallback: approximate tokenization (~4 chars/token for Qwen3)
     return Array.from({ length: Math.ceil(text.length / 4) }, (_, i) => i);
   }
 

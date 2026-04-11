@@ -68,6 +68,7 @@ import {
   LlamaCpp,
 } from "./llm.js";
 import { MlxLLM } from "./mlx-llm.js";
+import { OpenAILLM } from "./openai-llm.js";
 import {
   setConfigSource,
   loadConfig,
@@ -368,9 +369,10 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
   // Create LLM instance based on QMD_EMBED_PROVIDER env var
   // - "mlx": Use the external MLX server for ALL operations (embed, rerank, generate)
+  // - "openai": Use OpenAI API for embeddings, fall back to LlamaCpp for rerank/generate
   // - default: Use node-llama-cpp in-process (small models, works offline)
   const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
-  let llm: InstanceType<typeof LlamaCpp> | MlxLLM;
+  let llm: InstanceType<typeof LlamaCpp> | MlxLLM | OpenAILLM;
 
   if (embedProvider === 'mlx') {
     llm = new MlxLLM({
@@ -379,6 +381,15 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       rerankModel: config?.models?.rerank,
     });
     process.stderr.write(`Using MLX for ALL operations (embed + rerank + generate) via ${process.env.QMD_MLX_BASE_URL || 'http://127.0.0.1:8080'}\n`);
+  } else if (embedProvider === 'openai') {
+    // OpenAI for embeddings only — rerank/generate still use LlamaCpp (GGUF)
+    // OpenAILLM throws on generate/rerank, so store.ts uses LlamaCpp for those ops
+    llm = new OpenAILLM({
+      embedModel: config?.models?.embed,
+      generateModel: config?.models?.generate,
+      rerankModel: config?.models?.rerank,
+    });
+    process.stderr.write(`Using OpenAI for embeddings (${(llm as OpenAILLM).embedModelName}, ${(llm as OpenAILLM).embedDimensions}d) + LlamaCpp for rerank/generate\n`);
   } else {
     llm = new LlamaCpp({
       embedModel: config?.models?.embed,

@@ -28,6 +28,7 @@ import {
   type ILLMSession,
 } from "./llm.js";
 import { MlxLLM } from "./mlx-llm.js";
+import { OpenAILLM } from "./openai-llm.js";
 import type {
   NamedCollection,
   Collection,
@@ -63,7 +64,7 @@ export const CHUNK_WINDOW_CHARS = CHUNK_WINDOW_TOKENS * 4;  // 800 chars
  * Get the LlamaCpp instance for a store — prefers the store's own instance,
  * falls back to the global singleton.
  */
-function getLlm(store: Store): LlamaCpp | MlxLLM {
+function getLlm(store: Store): LlamaCpp | MlxLLM | OpenAILLM {
   return store.llm ?? getDefaultLlamaCpp();
 }
 
@@ -1079,7 +1080,7 @@ export type Store = {
   db: Database;
   dbPath: string;
   /** Optional LlamaCpp or MlxLLM instance for this store (overrides the global singleton) */
-  llm?: LlamaCpp | MlxLLM;
+  llm?: LlamaCpp | MlxLLM | OpenAILLM;
   close: () => void;
   ensureVecTable: (dimensions: number) => void;
 
@@ -1546,6 +1547,139 @@ async function generateEmbeddingsViaMlx(
 }
 
 /**
+ * Generate embeddings via OpenAI API.
+ * Very similar to the MLX path but uses OpenAI's /v1/embeddings endpoint.
+ * No session management needed — OpenAI is a stateless API.
+ */
+async function generateEmbeddingsViaOpenAI(
+  openaiLlm: OpenAILLM,
+  store: Store,
+  db: Database,
+  docsToEmbed: { hash: string; bytes: number; path: string }[],
+  options: EmbedOptions | undefined,
+  embedModelUri: string,
+  now: string,
+  signal?: AbortSignal,
+): Promise<EmbedResult> {
+  const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
+  const encoder = new TextEncoder();
+  const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+  const totalDocs = docsToEmbed.length;
+  const startTime = Date.now();
+  let chunksEmbedded = 0;
+  let errors = 0;
+  let bytesProcessed = 0;
+  let totalChunks = 0;
+  let vectorTableInitialized = false;
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 3;
+  const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
+
+  for (const batchMeta of batches) {
+    const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
+    const batchChunks: ChunkItem[] = [];
+    const batchBytes = batchMeta.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+
+    for (const doc of batchDocs) {
+      if (!doc.body.trim()) continue;
+      const title = extractTitle(doc.body, doc.path);
+
+      // OpenAI path: use lightweight character-based chunking (no local LlamaCpp needed)
+      // OpenAI's API handles tokenization server-side. We just need reasonable chunk sizes.
+      const charChunks = await chunkDocumentAsync(doc.body, undefined, undefined, undefined, doc.path, options?.chunkStrategy);
+      const estCharsPerToken = 3; // conservative estimate
+      for (let seq = 0; seq < charChunks.length; seq++) {
+        const chunk = charChunks[seq]!;
+        const estTokens = Math.ceil(chunk.text.length / estCharsPerToken);
+        batchChunks.push({ hash: doc.hash, title, text: chunk.text, seq, pos: chunk.pos, tokens: estTokens, bytes: encoder.encode(chunk.text).length });
+      }
+    }
+
+    totalChunks += batchChunks.length;
+    if (batchChunks.length === 0) {
+      bytesProcessed += batchBytes;
+      options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
+      continue;
+    }
+
+    const texts = batchChunks.map((chunk) => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
+
+    try {
+      const embeddings = await openaiLlm.embedBatch(texts, { signal } as EmbedOptions);
+
+      // Count null vs non-null results
+      const nullCount = embeddings.filter(e => e === null).length;
+      if (nullCount > 0 && nullCount === embeddings.length) {
+        throw new Error(`OpenAI returned no valid embeddings for batch of ${texts.length} texts. Aborting embed.`);
+      }
+
+      const firstEmbedding = embeddings.find((embedding): embedding is NonNullable<typeof embedding> => embedding !== null);
+
+      if (!vectorTableInitialized) {
+        if (!firstEmbedding) {
+          throw new Error("Failed to get OpenAI embedding dimensions");
+        }
+        store.ensureVecTable(firstEmbedding.embedding.length);
+        vectorTableInitialized = true;
+      }
+
+      for (let i = 0; i < batchChunks.length; i++) {
+        const chunk = batchChunks[i]!;
+        const embedding = embeddings[i];
+        if (embedding) {
+          insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), embedModelUri, now);
+          chunksEmbedded++;
+        } else {
+          errors++;
+        }
+      }
+      consecutiveFailures = 0;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Aborting embed')) {
+        throw err;
+      }
+      // Rate limits (429) are retried automatically by OpenAILLM — if they
+      // still bubble up here, don't count them as fatal consecutive failures
+      const isRateLimit = err instanceof Error && (err.message.includes('429') || err.message.includes('Rate limit'));
+      if (!isRateLimit) {
+        consecutiveFailures++;
+      }
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        throw new Error(`OpenAI embed failed ${MAX_CONSECUTIVE_FAILURES} batches in a row. Last error: ${errMsg}. Aborting embed.`);
+      }
+      errors += batchChunks.length;
+      console.error("OpenAI batch embedding error:", err);
+    }
+
+    bytesProcessed += batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
+    options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
+
+    const batchIndex = batches.indexOf(batchMeta);
+    if (batchIndex > 0 && batchIndex % 10 === 0) {
+      const pct = totalChunks > 0 ? ((chunksEmbedded / totalChunks) * 100).toFixed(1) : "0";
+      const elapsed = (Date.now() - startTime) / 1000;
+      const throughput = elapsed > 0 ? (chunksEmbedded / elapsed).toFixed(1) : "?";
+      const etaSec = elapsed > 2 && chunksEmbedded > 0 ? ((totalChunks - chunksEmbedded) * elapsed / chunksEmbedded) : -1;
+      const etaStr = etaSec > 0 ? `${Math.floor(etaSec / 60)}m${Math.floor(etaSec % 60)}s` : "...";
+      console.error(`[embed] ${chunksEmbedded}/${totalChunks} chunks (${pct}%), ${errors} errors, ${throughput} chunks/s, ETA ${etaStr}`);
+    }
+
+    // Periodic WAL checkpoint
+    if (batchIndex > 0 && batchIndex % 100 === 0) {
+      try {
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        // Non-fatal
+      }
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+  return { docsProcessed: totalDocs, chunksEmbedded, errors, durationMs };
+}
+
+/**
  * Generate vector embeddings for documents that need them.
  * Pure function — no console output, no db lifecycle management.
  * Uses the store's LlamaCpp instance if set, otherwise the global singleton.
@@ -1579,11 +1713,19 @@ export async function generateEmbeddings(
 
   // Create a session manager for this llm instance
   // For MlxLLM, call embed directly (bypass session - the MLX server manages its own lifecycle)
+  // For OpenAILLM, call embed directly (stateless API client, no session needed)
   const isMlx = llm instanceof MlxLLM;
+  const isOpenAI = llm instanceof OpenAILLM;
 
   if (isMlx) {
     // MLX path: direct API calls, no session management needed
     const result = await generateEmbeddingsViaMlx(llm, store, db, docsToEmbed, options, embedModelUri, now, options?.signal);
+    return result;
+  }
+
+  if (isOpenAI) {
+    // OpenAI path: direct API calls, no session management needed
+    const result = await generateEmbeddingsViaOpenAI(llm, store, db, docsToEmbed, options, embedModelUri, now, options?.signal);
     return result;
   }
 
@@ -3256,7 +3398,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // Embeddings
 // =============================================================================
 
-async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp | MlxLLM): Promise<number[] | null> {
+async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM): Promise<number[] | null> {
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text, model) : formatDocForEmbedding(text, undefined, model);
   const result = session
@@ -3331,7 +3473,7 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
   const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
@@ -3349,7 +3491,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
-  const llm = llmOverride ?? getDefaultLlamaCpp();
+  const llm = llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp());
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
   const results = await llm.expandQuery(query, { intent });
 
@@ -3370,7 +3512,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM): Promise<{ file: string; score: number }[]> {
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 
@@ -3395,7 +3537,7 @@ export async function rerank(query: string, documents: { file: string; text: str
 
   // Rerank uncached documents using LlamaCpp
   if (uncachedDocsByChunk.size > 0) {
-    const llm = llmOverride ?? getDefaultLlamaCpp();
+    const llm = llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp());
     const uncachedDocs = [...uncachedDocsByChunk.values()];
     const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model });
 

@@ -79,6 +79,7 @@ import {
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
 import { MlxLLM } from "../mlx-llm.js";
+import { OpenAILLM } from "../openai-llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -123,10 +124,21 @@ function getStore(): ReturnType<typeof createStore> {
       // Config may not exist yet — that's fine, DB works without it
     }
 
-    // Check for MLX embedding provider (independent of config file)
+    // Check for embedding provider (independent of config file)
     const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
     if (embedProvider === 'mlx') {
       setDefaultLlamaCpp(new MlxLLM() as any);
+    } else if (embedProvider === 'openai') {
+      // OpenAI for embeddings, LlamaCpp for rerank/generate
+      const openaiLlm = new OpenAILLM({
+        embedModel: process.env.QMD_EMBED_MODEL,
+      });
+      if (!process.env.QMD_OPENAI_API_KEY) {
+        console.error('Error: QMD_OPENAI_API_KEY is required when QMD_EMBED_PROVIDER=openai');
+        process.exit(1);
+      }
+      setDefaultLlamaCpp(openaiLlm as any);
+      process.stderr.write(`[QMD CLI] Using OpenAI for embeddings (${openaiLlm.embedModelName}, ${openaiLlm.embedDimensions}d)\n`);
     } else {
       // Default: use LlamaCpp with optional config
       try {

@@ -1642,10 +1642,10 @@ async function generateEmbeddingsViaOpenAI(
       if (err instanceof Error && err.message.includes('Aborting embed')) {
         throw err;
       }
-      // Rate limits (429) are retried automatically by OpenAILLM — if they
-      // still bubble up here, don't count them as fatal consecutive failures
-      const isRateLimit = err instanceof Error && (err.message.includes('429') || err.message.includes('Rate limit'));
-      if (!isRateLimit) {
+      // Rate limits (429) and token-limit errors (400) are retried automatically by OpenAILLM —
+      // if they still bubble up here, don't count them as fatal consecutive failures
+      const isRetriableError = err instanceof Error && (err.message.includes('429') || err.message.includes('Rate limit') || err.message.includes('maximum') || err.message.includes('token'));
+      if (!isRetriableError) {
         consecutiveFailures++;
       }
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {

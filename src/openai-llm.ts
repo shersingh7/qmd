@@ -116,8 +116,8 @@ export class OpenAILLM implements LLM {
 
   // ─── Core: Embed Batch ────────────────────────────────────────────────
 
-  // Maximum tokens per embed request (OpenAI limit)
-  static readonly MAX_TOKENS_PER_REQUEST = 300_000;
+  // Maximum tokens per embed request (OpenAI limit is 300K, use 200K for safety margin)
+  static readonly MAX_TOKENS_PER_REQUEST = 200_000;
   // Maximum tokens per single input text (OpenAI text-embedding-3-large limit)
   static readonly MAX_TOKENS_PER_INPUT = 8191;
   // Estimated chars per token (conservative for mixed content)
@@ -219,6 +219,19 @@ export class OpenAILLM implements LLM {
             process.stderr.write(`[OpenAI] Rate limited (429), retrying in ${Math.round(waitMs/1000)}s (${retries} retries left): ${errorBody.substring(0, 120)}\n`);
             await new Promise(r => setTimeout(r, waitMs));
             continue;
+          }
+
+          // For 400 token-limit errors, also retry (our estimation may be off)
+          if (response.status === 400 && retries > 1) {
+            const isTokenLimit = errorBody.includes('maximum') || errorBody.includes('token');
+            if (isTokenLimit) {
+              retries--;
+              lastError = err;
+              const backoff = Math.pow(2, 10 - retries) * 1000 + Math.random() * 2000;
+              process.stderr.write(`[OpenAI] Token limit error (400), retrying in ${Math.round(backoff/1000)}s (${retries} retries left): ${errorBody.substring(0, 150)}\n`);
+              await new Promise(r => setTimeout(r, backoff));
+              continue;
+            }
           }
 
           if (err.retriable && retries > 1) {

@@ -118,27 +118,41 @@ export class OpenAILLM implements LLM {
 
   // Maximum tokens per embed request (OpenAI limit)
   static readonly MAX_TOKENS_PER_REQUEST = 300_000;
+  // Maximum tokens per single input text (OpenAI text-embedding-3-large limit)
+  static readonly MAX_TOKENS_PER_INPUT = 8191;
+  // Estimated chars per token (conservative for mixed content)
+  static readonly EST_CHARS_PER_TOKEN = 3;
 
   async embedBatch(texts: string[], options?: EmbedOptions & { signal?: AbortSignal }): Promise<(EmbeddingResult | null)[]> {
     // Smart splitting: stay under both text-count and token-count limits
-    // Estimate ~3 chars/token for mixed content
-    const EST_CHARS_PER_TOKEN = 3;
+    const EST_CHARS_PER_TOKEN = OpenAILLM.EST_CHARS_PER_TOKEN;
     const MAX_TOKENS = OpenAILLM.MAX_TOKENS_PER_REQUEST;
+    const MAX_INPUT_CHARS = OpenAILLM.MAX_TOKENS_PER_INPUT * EST_CHARS_PER_TOKEN; // ~24K chars
+
+    // Truncate any individual texts that exceed the per-input token limit
+    const processedTexts = texts.map(t => {
+      if (t.length > MAX_INPUT_CHARS) {
+        process.stderr.write(`[OpenAI] Truncating input from ${t.length} to ${MAX_INPUT_CHARS} chars (${Math.ceil(t.length / EST_CHARS_PER_TOKEN)} estimated tokens > ${OpenAILLM.MAX_TOKENS_PER_INPUT} limit)\n`);
+        return t.slice(0, MAX_INPUT_CHARS);
+      }
+      return t;
+    });
+
     const results: (EmbeddingResult | null)[] = [];
 
     let i = 0;
-    while (i < texts.length) {
+    while (i < processedTexts.length) {
       // Build a sub-batch that fits within the token limit
       let estTokens = 0;
       let batchEnd = i;
-      while (batchEnd < texts.length && batchEnd - i < this.batchSize) {
-        const textTokens = Math.ceil(texts[batchEnd]!.length / EST_CHARS_PER_TOKEN);
+      while (batchEnd < processedTexts.length && batchEnd - i < this.batchSize) {
+        const textTokens = Math.ceil(processedTexts[batchEnd]!.length / EST_CHARS_PER_TOKEN);
         if (estTokens + textTokens > MAX_TOKENS && batchEnd > i) break;
         estTokens += textTokens;
         batchEnd++;
       }
 
-      const batch = texts.slice(i, batchEnd);
+      const batch = processedTexts.slice(i, batchEnd);
       const batchResults = await this._embedBatchInternal(batch, options?.signal);
       results.push(...batchResults);
       i = batchEnd;

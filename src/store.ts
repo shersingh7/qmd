@@ -1586,7 +1586,11 @@ async function generateEmbeddingsViaOpenAI(
 
       // OpenAI path: use lightweight character-based chunking (no local LlamaCpp needed)
       // OpenAI's API handles tokenization server-side. We just need reasonable chunk sizes.
-      const charChunks = await chunkDocumentAsync(doc.body, undefined, undefined, undefined, doc.path, options?.chunkStrategy);
+      // Use smaller chunks to stay well under OpenAI's 8191 token limit per input (~24K chars)
+      const openaiMaxChars = 6000; // ~2000 tokens with safety margin
+      const openaiOverlapChars = 500;
+      const openaiWindowChars = 1000;
+      const charChunks = await chunkDocumentAsync(doc.body, openaiMaxChars, openaiOverlapChars, openaiWindowChars, doc.path, options?.chunkStrategy);
       const estCharsPerToken = 3; // conservative estimate
       for (let seq = 0; seq < charChunks.length; seq++) {
         const chunk = charChunks[seq]!;

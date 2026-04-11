@@ -120,8 +120,8 @@ export class OpenAILLM implements LLM {
   static readonly MAX_TOKENS_PER_REQUEST = 200_000;
   // Maximum tokens per single input text (OpenAI text-embedding-3-large limit)
   static readonly MAX_TOKENS_PER_INPUT = 8191;
-  // Estimated chars per token (conservative for mixed content)
-  static readonly EST_CHARS_PER_TOKEN = 3;
+  // Estimated chars per token (conservative — code/special chars use more tokens)
+  static readonly EST_CHARS_PER_TOKEN = 2;
 
   async embedBatch(texts: string[], options?: EmbedOptions & { signal?: AbortSignal }): Promise<(EmbeddingResult | null)[]> {
     // Smart splitting: stay under both text-count and token-count limits
@@ -221,16 +221,22 @@ export class OpenAILLM implements LLM {
             continue;
           }
 
-          // For 400 token-limit errors, also retry (our estimation may be off)
-          if (response.status === 400 && retries > 1) {
+          // For 400 token-limit errors, split the batch and retry each half.
+          // This isolates the oversized text(s) so valid ones still get embedded.
+          if (response.status === 400) {
             const isTokenLimit = errorBody.includes('maximum') || errorBody.includes('token');
             if (isTokenLimit) {
-              retries--;
-              lastError = err;
-              const backoff = Math.pow(2, 10 - retries) * 1000 + Math.random() * 2000;
-              process.stderr.write(`[OpenAI] Token limit error (400), retrying in ${Math.round(backoff/1000)}s (${retries} retries left): ${errorBody.substring(0, 150)}\n`);
-              await new Promise(r => setTimeout(r, backoff));
-              continue;
+              if (texts.length === 1) {
+                // Single text exceeds limit — skip it (return null)
+                process.stderr.write(`[OpenAI] ⚠ Single text exceeds token limit (${texts[0]!.length} chars), skipping\n`);
+                return [null];
+              }
+              // Split batch in half and retry each side
+              const mid = Math.ceil(texts.length / 2);
+              process.stderr.write(`[OpenAI] Token limit on batch of ${texts.length}, splitting into ${mid}+${texts.length - mid}\n`);
+              const left = await this._embedBatchInternal(texts.slice(0, mid), signal);
+              const right = await this._embedBatchInternal(texts.slice(mid), signal);
+              return [...left, ...right];
             }
           }
 

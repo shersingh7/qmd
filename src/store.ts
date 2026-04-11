@@ -1614,14 +1614,20 @@ async function generateEmbeddingsViaOpenAI(
       // Count null vs non-null results
       const nullCount = embeddings.filter(e => e === null).length;
       if (nullCount > 0 && nullCount === embeddings.length) {
-        throw new Error(`OpenAI returned no valid embeddings for batch of ${texts.length} texts. Aborting embed.`);
+        // All null — likely all texts exceeded token limit. Log and skip (don't abort).
+        process.stderr.write(`[OpenAI embed] ⚠ All ${texts.length} texts in batch returned null (likely exceeded token limit), skipping batch\n`);
       }
 
       const firstEmbedding = embeddings.find((embedding): embedding is NonNullable<typeof embedding> => embedding !== null);
 
       if (!vectorTableInitialized) {
         if (!firstEmbedding) {
-          throw new Error("Failed to get OpenAI embedding dimensions");
+          // Can't initialize vector table without at least one valid embedding.
+          // Skip this batch — will initialize on a later batch with valid results.
+          errors += batchChunks.length;
+          bytesProcessed += batchBytes;
+          options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
+          continue;
         }
         store.ensureVecTable(firstEmbedding.embedding.length);
         vectorTableInitialized = true;

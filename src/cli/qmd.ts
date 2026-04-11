@@ -1689,7 +1689,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 }
 
 function renderProgressBar(percent: number, width: number = 30): string {
-  const filled = Math.round((percent / 100) * width);
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
   const empty = width - filled;
   const bar = "█".repeat(filled) + "░".repeat(empty);
   return bar;

@@ -116,15 +116,32 @@ export class OpenAILLM implements LLM {
 
   // ─── Core: Embed Batch ────────────────────────────────────────────────
 
-  async embedBatch(texts: string[], options?: EmbedOptions & { signal?: AbortSignal }): Promise<(EmbeddingResult | null)[]> {
-    // Split into batches of batchSize
-    const results: (EmbeddingResult | null)[] = [];
-    const batchSize = this.batchSize;
+  // Maximum tokens per embed request (OpenAI limit)
+  static readonly MAX_TOKENS_PER_REQUEST = 300_000;
 
-    for (let i = 0; i < texts.length; i += batchSize) {
-      const batch = texts.slice(i, i + batchSize);
+  async embedBatch(texts: string[], options?: EmbedOptions & { signal?: AbortSignal }): Promise<(EmbeddingResult | null)[]> {
+    // Smart splitting: stay under both text-count and token-count limits
+    // Estimate ~3 chars/token for mixed content
+    const EST_CHARS_PER_TOKEN = 3;
+    const MAX_TOKENS = OpenAILLM.MAX_TOKENS_PER_REQUEST;
+    const results: (EmbeddingResult | null)[] = [];
+
+    let i = 0;
+    while (i < texts.length) {
+      // Build a sub-batch that fits within the token limit
+      let estTokens = 0;
+      let batchEnd = i;
+      while (batchEnd < texts.length && batchEnd - i < this.batchSize) {
+        const textTokens = Math.ceil(texts[batchEnd]!.length / EST_CHARS_PER_TOKEN);
+        if (estTokens + textTokens > MAX_TOKENS && batchEnd > i) break;
+        estTokens += textTokens;
+        batchEnd++;
+      }
+
+      const batch = texts.slice(i, batchEnd);
       const batchResults = await this._embedBatchInternal(batch, options?.signal);
       results.push(...batchResults);
+      i = batchEnd;
     }
 
     return results;

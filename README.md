@@ -1,8 +1,58 @@
-# QMD - Query Markup Documents
+# QMD Hybrid Search Fork
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
+This repository is a hybrid-search fork optimized for Apple Silicon and mixed local/cloud retrieval:
+- OpenAI embeddings (`text-embedding-3-large`)
+- local GGUF query expansion (`qmd-query-expansion-1.7B`)
+- MLX reranking (`Qwen3-8B-MLX-4bit`)
+- split embed/query/rerank backends
+- retrieval-quality tuning for noisy personal knowledge bases
+
+It is not a pure upstream mirror anymore; it is an opinionated implementation focused on practical retrieval quality and manageable memory usage on macOS.
+
 QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking with local models. The default stack uses node-llama-cpp with GGUF models, and Apple Silicon setups can optionally run 4096d MLX embeddings through an external server.
+
+## Current hybrid implementation
+
+Recommended runtime stack for this fork:
+
+```sh
+QMD_EMBED_PROVIDER=openai
+QMD_EMBED_MODEL=text-embedding-3-large
+QMD_GENERATE_MODEL=hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf
+QMD_RERANK_PROVIDER=mlx
+QMD_MLX_BASE_URL=http://127.0.0.1:8080
+MLX_RERANK_MODEL=Qwen/Qwen3-8B-MLX-4bit
+MLX_PRELOAD_EMBED=0
+```
+
+Why this split exists:
+- embeddings matter a lot for recall, so using a strong remote embedding model is worth it
+- reranking matters a lot for final quality, so the 8B MLX reranker is worth the RAM budget
+- query expansion has diminishing returns, so a smaller local GGUF model is the right tradeoff
+
+## Security / privacy guardrails
+
+This fork is meant for personal knowledge retrieval, but secrets still need hard boundaries.
+
+Do not commit or push:
+- `.env`, `.env.*`
+- SQLite databases (`*.db`, `*.sqlite`)
+- local model caches
+- API keys, bearer tokens, OAuth tokens, cookies, or session dumps
+
+Before pushing changes, verify with:
+
+```sh
+git ls-files | egrep '(\.env|\.sqlite$|\.db$)' || true
+git grep -nE '(OPENAI_API_KEY|QMD_OPENAI_API_KEY|sk-[A-Za-z0-9]|gho_[A-Za-z0-9]|github_pat_)' -- . || true
+```
+
+The intended pattern is:
+- config and secrets live outside the repo
+- indexes and caches live outside the repo
+- only code, tests, docs, and safe config templates get committed
 
 ![QMD Architecture](assets/qmd-architecture.png)
 

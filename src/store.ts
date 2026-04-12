@@ -87,6 +87,28 @@ function getRerankLlm(store: Store): LlamaCpp | MlxLLM {
   return getQueryLlm(store);
 }
 
+function pathQualityPenalty(filepath: string): number {
+  const lower = filepath.toLowerCase();
+  let penalty = 0;
+
+  // Generated/session/archive garbage should never beat real docs unless the
+  // query is specifically about those artifacts.
+  if (lower.includes('/memory/grok-archive/')) penalty += 0.30;
+  if (lower.includes('/memory/sessions/')) penalty += 0.35;
+  if (/\/memory\/20\d\d-\d\d-\d\d/.test(lower)) penalty += 0.28;
+  if (lower.includes('/workspace/wiki/raw/entries/')) penalty += 0.25;
+  if (lower.includes('/workspace/tmp/')) penalty += 0.35;
+  if (lower.includes('/site-packages/')) penalty += 0.45;
+  if (lower.includes('/dist-info/')) penalty += 0.50;
+  if (lower.includes('/references/commands.md')) penalty += 0.22;
+  if (lower.includes('/templates/')) penalty += 0.18;
+
+  // Reward the curated knowledge base slightly.
+  if (lower.startsWith('qmd://knowledge/')) penalty -= 0.08;
+
+  return penalty;
+}
+
 // =============================================================================
 // Smart Chunking - Break Point Detection
 // =============================================================================
@@ -332,8 +354,9 @@ export function chunkDocumentWithBreakPoints(
 export const STRONG_SIGNAL_MIN_SCORE = 0.85;
 export const STRONG_SIGNAL_MIN_GAP = 0.15;
 // Max candidates to pass to reranker — balances quality vs latency.
-// 40 keeps rank 31-40 visible to the reranker (matters for recall on broad queries).
-export const RERANK_CANDIDATE_LIMIT = 40;
+// 24 is a better default for 8B MLX reranking on Apple Silicon: enough recall
+// for broad queries without paying the heavy latency penalty of 40-chunk reranks.
+export const RERANK_CANDIDATE_LIMIT = 24;
 
 /**
  * A typed query expansion result. Decoupled from llm.ts internal Queryable —
@@ -4373,7 +4396,10 @@ export async function hybridQuery(
   const weights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
   const fused = reciprocalRankFusion(rankedLists, weights);
   const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
-  const candidates = fused.slice(0, candidateLimit);
+  const candidates = fused
+    .map(c => ({ ...c, score: c.score - pathQualityPenalty(c.file) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
 
@@ -4415,6 +4441,8 @@ export async function hybridQuery(
         const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
         const rrfRank = i + 1;
         const rrfScore = 1 / rrfRank;
+        const penalty = pathQualityPenalty(cand.file);
+        const finalScore = rrfScore - penalty;
         const trace = rrfTraceByFile?.get(cand.file);
         const explainData: HybridQueryExplain | undefined = explain ? {
           ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
@@ -4429,7 +4457,7 @@ export async function hybridQuery(
             contributions: trace?.contributions ?? [],
           },
           rerankScore: 0,
-          blendedScore: rrfScore,
+          blendedScore: finalScore,
         } : undefined;
 
         return {
@@ -4439,7 +4467,7 @@ export async function hybridQuery(
           body: cand.body,
           bestChunk,
           bestChunkPos,
-          score: rrfScore,
+          score: finalScore,
           context: store.getContextForFile(cand.file),
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
@@ -4482,7 +4510,8 @@ export async function hybridQuery(
     else if (rrfRank <= 10) rrfWeight = 0.60;
     else rrfWeight = 0.40;
     const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+    const penalty = pathQualityPenalty(r.file);
+    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score - penalty;
 
     const candidate = candidateMap.get(r.file);
     const chunkInfo = docChunkMap.get(r.file);
@@ -4807,6 +4836,8 @@ export async function structuredSearch(
         const bestChunkPos = chunkInfo?.chunks[bestIdx]?.pos || 0;
         const rrfRank = i + 1;
         const rrfScore = 1 / rrfRank;
+        const penalty = pathQualityPenalty(cand.file);
+        const finalScore = rrfScore - penalty;
         const trace = rrfTraceByFile?.get(cand.file);
         const explainData: HybridQueryExplain | undefined = explain ? {
           ftsScores: trace?.contributions.filter(c => c.source === "fts").map(c => c.backendScore) ?? [],
@@ -4821,7 +4852,7 @@ export async function structuredSearch(
             contributions: trace?.contributions ?? [],
           },
           rerankScore: 0,
-          blendedScore: rrfScore,
+          blendedScore: finalScore,
         } : undefined;
 
         return {
@@ -4831,7 +4862,7 @@ export async function structuredSearch(
           body: cand.body,
           bestChunk,
           bestChunkPos,
-          score: rrfScore,
+          score: finalScore,
           context: store.getContextForFile(cand.file),
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
@@ -4873,7 +4904,8 @@ export async function structuredSearch(
     else if (rrfRank <= 10) rrfWeight = 0.60;
     else rrfWeight = 0.40;
     const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+    const penalty = pathQualityPenalty(r.file);
+    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score - penalty;
 
     const candidate = candidateMap.get(r.file);
     const chunkInfo = docChunkMap.get(r.file);

@@ -281,7 +281,37 @@ class RerankerService:
         self.lock = threading.Lock()
         self._load_lock = threading.Lock()  # Prevents concurrent start_loading() calls
         self._ready_event = threading.Event()   # Set when loading completes (ok or error)
+        self._idle_unload_timer: threading.Timer | None = None
         self.started_at = time.time()
+
+    def _schedule_idle_unload(self) -> None:
+        idle_s = int(os.environ.get("MLX_RERANK_IDLE_UNLOAD_S", "45") or "45")
+        if idle_s <= 0:
+            return
+        if self._idle_unload_timer is not None:
+            self._idle_unload_timer.cancel()
+        timer = threading.Timer(idle_s, self.unload_if_idle)
+        timer.daemon = True
+        self._idle_unload_timer = timer
+        timer.start()
+
+    def unload_if_idle(self) -> None:
+        with self.lock:
+            if self.model is None:
+                return
+            LOGGER.info("Unloading MLX reranker model after idle timeout")
+            self.model = None
+            self.tokenizer = None
+            self.status = "not_loaded"
+            self.error = None
+            self._ready_event = threading.Event()
+            try:
+                import mlx.core as mx
+                import gc
+                mx.eval()
+                gc.collect()
+            except Exception:
+                pass
 
     def start_loading(self) -> None:
         # Prevent concurrent start_loading() calls (TOCTOU race fix)
@@ -372,6 +402,18 @@ class RerankerService:
                     "text": doc_text[:200],
                 })
 
+            try:
+                del logits, last_logits, mx_tokens
+            except Exception:
+                pass
+            try:
+                import gc
+                mx.eval()
+                gc.collect()
+            except Exception:
+                pass
+
+        self._schedule_idle_unload()
         return results
 
 

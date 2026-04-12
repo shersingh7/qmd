@@ -2504,6 +2504,40 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       });
     }
 
+    // If curated default collections produced nothing, broaden once to all
+    // collections. This avoids frustrating empty responses for broad queries
+    // while still keeping the default search set high-signal.
+    if (results.length === 0 && !opts.collection) {
+      const markdownCollections = yamlListCollections()
+        .filter(c => (c.pattern || '').includes('.md'))
+        .map(c => c.name);
+      process.stderr.write(`${c.dim}No hits in default collections — broadening to markdown collections...${c.reset}\n`);
+      results = parsed
+        ? await structuredSearch(store, parsed.searches, {
+            collections: markdownCollections,
+            limit: opts.all ? 500 : (opts.limit || 10),
+            minScore: opts.minScore || 0,
+            candidateLimit: opts.candidateLimit,
+            skipRerank: opts.skipRerank,
+            explain: !!opts.explain,
+            intent,
+            chunkStrategy: opts.chunkStrategy,
+          })
+        : await hybridQuery(store, query, {
+            collection: undefined,
+            limit: opts.all ? 500 : (opts.limit || 10),
+            minScore: opts.minScore || 0,
+            candidateLimit: opts.candidateLimit,
+            skipRerank: opts.skipRerank,
+            explain: !!opts.explain,
+            intent,
+            chunkStrategy: opts.chunkStrategy,
+          });
+      if (!parsed) {
+        results = results.filter(r => markdownCollections.some(name => r.file.startsWith(`qmd://${name}/`)));
+      }
+    }
+
     closeDb();
 
     if (results.length === 0) {

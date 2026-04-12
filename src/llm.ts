@@ -1076,8 +1076,8 @@ export class LlamaCpp implements LLM {
 
     const intent = options.intent;
     const prompt = intent
-      ? `/no_think Expand this search query: ${query}\nQuery intent: ${intent}`
-      : `/no_think Expand this search query: ${query}`;
+      ? `/no_think Expand this search query for retrieval. Keep the core domain terms intact, avoid generic tutorial phrasing, and emit at most 3 lines total with the most useful search rewrites. Query: ${query}\nQuery intent: ${intent}`
+      : `/no_think Expand this search query for retrieval. Keep the core domain terms intact, avoid generic tutorial phrasing, and emit at most 3 lines total with the most useful search rewrites. Query: ${query}`;
 
     // Create a bounded context for expansion to prevent large default VRAM allocations.
     const genContext = await this.generateModel!.createContext({

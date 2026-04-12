@@ -31,12 +31,20 @@ import {
 
 const DEFAULT_MLX_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_MLX_EMBED_MODEL = "mlx-community/Qwen3-Embedding-8B-4bit-DWQ";
-const DEFAULT_MLX_RERANK_MODEL = "mlx-community/Qwen3-Reranker-8B-mxfp8";
+const DEFAULT_MLX_RERANK_MODEL = "Qwen/Qwen3-8B-MLX-4bit";
 const DEFAULT_MLX_GENERATE_MODEL = "Qwen/Qwen3-8B-MLX-4bit";
 const DEFAULT_MLX_BATCH_SIZE = 16;
 const DEFAULT_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 250;
-const DEFAULT_FETCH_TIMEOUT_MS = 60_000; // 60s — prevents zombie fetch hangs
+const DEFAULT_FETCH_TIMEOUT_MS = 60_000; // 60s — generic hot-path request timeout
+const DEFAULT_HEALTH_TIMEOUT_MS = 10_000;
+const DEFAULT_EMBED_TIMEOUT_MS = 300_000;
+const DEFAULT_RERANK_TIMEOUT_MS = 180_000;
+const DEFAULT_GENERATE_TIMEOUT_MS = 180_000;
+const DEFAULT_WARMUP_TIMEOUT_MS = 300_000;
+
+type MlxServiceName = "embed" | "rerank" | "generate";
+type MlxServiceStatus = "not_loaded" | "loading" | "ok" | "error" | string;
 
 // ─── Response Types ──────────────────────────────────────────────────────────
 
@@ -49,13 +57,14 @@ interface MlxEmbeddingsResponse {
 }
 
 interface MlxHealthResponse {
-  status?: string;
+  status?: MlxServiceStatus;
   embedding_dim?: number;
   models?: {
-    embed?: boolean;
-    rerank?: boolean;
-    generate?: boolean;
+    embed?: MlxServiceStatus;
+    rerank?: MlxServiceStatus;
+    generate?: MlxServiceStatus;
   };
+  error?: string;
 }
 
 interface MlxRerankResponse {
@@ -123,26 +132,27 @@ function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number;
   const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, externalSignal, ...rest } = init;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let abortListener: (() => void) | undefined;
 
-  // If the external signal fires (SIGINT), abort our fetch immediately
+  // If the external signal fires (SIGINT), abort our fetch immediately.
   if (externalSignal) {
     if (externalSignal.aborted) {
       clearTimeout(timer);
       controller.abort();
     } else {
-      externalSignal.addEventListener('abort', () => {
+      abortListener = () => {
         clearTimeout(timer);
         controller.abort();
-      }, { once: true });
+      };
+      externalSignal.addEventListener("abort", abortListener, { once: true });
     }
   }
 
   const merged = { ...rest, signal: controller.signal };
   return fetch(url, merged).finally(() => {
     clearTimeout(timer);
-    // Clean up the listener if fetch completed before external signal fired
-    if (externalSignal) {
-      externalSignal.removeEventListener('abort', () => {});
+    if (externalSignal && abortListener) {
+      externalSignal.removeEventListener("abort", abortListener);
     }
   });
 }
@@ -169,6 +179,11 @@ export class MlxLLM implements LLM {
   private readonly _rerankModelName: string;
   private readonly _generateModelName: string;
   private readonly batchSize: number;
+  private readonly healthTimeoutMs: number;
+  private readonly embedTimeoutMs: number;
+  private readonly rerankTimeoutMs: number;
+  private readonly generateTimeoutMs: number;
+  private readonly warmupTimeoutMs: number;
   private _embeddingDimensions: number | null = null;
 
   constructor(config: {
@@ -189,6 +204,11 @@ export class MlxLLM implements LLM {
       config.mlxBatchSize ?? process.env.QMD_MLX_BATCH_SIZE,
       DEFAULT_MLX_BATCH_SIZE
     );
+    this.healthTimeoutMs = parsePositiveInteger(process.env.QMD_MLX_HEALTH_TIMEOUT_MS, DEFAULT_HEALTH_TIMEOUT_MS);
+    this.embedTimeoutMs = parsePositiveInteger(process.env.QMD_MLX_EMBED_TIMEOUT_MS, DEFAULT_EMBED_TIMEOUT_MS);
+    this.rerankTimeoutMs = parsePositiveInteger(process.env.QMD_MLX_RERANK_TIMEOUT_MS, DEFAULT_RERANK_TIMEOUT_MS);
+    this.generateTimeoutMs = parsePositiveInteger(process.env.QMD_MLX_GENERATE_TIMEOUT_MS, DEFAULT_GENERATE_TIMEOUT_MS);
+    this.warmupTimeoutMs = parsePositiveInteger(process.env.QMD_MLX_WARMUP_TIMEOUT_MS, DEFAULT_WARMUP_TIMEOUT_MS);
   }
 
   get embedModelName(): string {
@@ -218,6 +238,37 @@ export class MlxLLM implements LLM {
     if (typeof health.embedding_dim === "number" && health.embedding_dim > 0) {
       this._embeddingDimensions = health.embedding_dim;
     }
+  }
+
+  private getServiceStatus(health: MlxHealthResponse, service: MlxServiceName): MlxServiceStatus | undefined {
+    return health.models?.[service];
+  }
+
+  private async getServiceTimeoutMs(
+    service: MlxServiceName,
+    hotTimeoutMs: number,
+    warmupTimeoutMs: number = this.warmupTimeoutMs,
+  ): Promise<number> {
+    try {
+      const health = await this.fetchHealth();
+      this.updateEmbeddingDimensionsFromHealth(health);
+      const status = this.getServiceStatus(health, service);
+      if (status === "error") {
+        throw new Error(`MLX ${service} service is in error state${health.error ? `: ${health.error}` : ""}`);
+      }
+      return status === "ok" ? hotTimeoutMs : Math.max(hotTimeoutMs, warmupTimeoutMs);
+    } catch (error) {
+      if (error instanceof Error && /error state/i.test(error.message)) throw error;
+      // If the health probe fails, assume we might be paying cold-start cost.
+      return Math.max(hotTimeoutMs, warmupTimeoutMs);
+    }
+  }
+
+  private describeTimeout(error: unknown, timeoutMs: number): string {
+    if (error instanceof Error && error.name === "AbortError") {
+      return `request timed out after ${Math.round(timeoutMs / 1000)}s`;
+    }
+    return formatError(error);
   }
 
   private isFormattedQwenQuery(text: string): boolean {
@@ -293,7 +344,7 @@ export class MlxLLM implements LLM {
   private async fetchHealth(): Promise<MlxHealthResponse> {
     return await this.withRetry("MLX health check", async () => {
       const response = await fetchWithTimeout(`${this.baseUrl}/health`, {
-        timeoutMs: 10_000, // health check should be fast
+        timeoutMs: this.healthTimeoutMs,
       });
 
       if (!response.ok) {
@@ -331,7 +382,7 @@ export class MlxLLM implements LLM {
         const response = await this.fetchFromServer("/v1/embeddings", {
           input: batch,
           model,
-        }, options.signal, 300_000) as MlxEmbeddingsResponse;
+        }, options.signal, this.embedTimeoutMs) as MlxEmbeddingsResponse;
 
         const data = response.data ?? [];
         for (const item of data) {
@@ -360,13 +411,14 @@ export class MlxLLM implements LLM {
     options?: RerankOptions
   ): Promise<RerankResult> {
     const texts = documents.map((doc) => doc.text);
+    const timeoutMs = await this.getServiceTimeoutMs("rerank", this.rerankTimeoutMs);
 
     try {
       const response = await this.fetchFromServer("/v1/rerank", {
         query,
         documents: texts,
         model: this._rerankModelName,
-      }) as MlxRerankResponse;
+      }, undefined, timeoutMs) as MlxRerankResponse;
 
       const results: RerankDocumentResult[] = (response.results ?? []).map((item) => {
         const idx = item.index ?? 0;
@@ -382,7 +434,7 @@ export class MlxLLM implements LLM {
         model: response.model || this._rerankModelName,
       };
     } catch (error) {
-      console.error("MLX rerank error, returning original order:", error);
+      console.error(`MLX rerank error, returning original order (${this.describeTimeout(error, timeoutMs)}):`, error);
       // Fallback: return documents in original order with score 0
       return {
         results: documents.map((doc, i) => ({
@@ -398,12 +450,14 @@ export class MlxLLM implements LLM {
   // ─── Generation / Query Expansion ────────────────────────────────────────
 
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null> {
+    const timeoutMs = await this.getServiceTimeoutMs("generate", this.generateTimeoutMs);
+
     try {
       const response = await this.fetchFromServer("/v1/generate", {
         prompt,
         max_tokens: options?.maxTokens ?? 150,
         temperature: options?.temperature ?? 0.7,
-      }) as MlxGenerateResponse;
+      }, undefined, timeoutMs) as MlxGenerateResponse;
 
       return {
         text: response.text ?? "",
@@ -411,7 +465,7 @@ export class MlxLLM implements LLM {
         done: response.done ?? true,
       };
     } catch (error) {
-      console.error("MLX generate error:", error);
+      console.error(`MLX generate error (${this.describeTimeout(error, timeoutMs)}):`, error);
       return null;
     }
   }
@@ -425,6 +479,7 @@ export class MlxLLM implements LLM {
     const prompt = intent
       ? `/no_think Expand this search query: ${query}\nQuery intent: ${intent}`
       : `/no_think Expand this search query: ${query}`;
+    const timeoutMs = await this.getServiceTimeoutMs("generate", this.generateTimeoutMs);
 
     try {
       const response = await this.fetchFromServer("/v1/chat/completions", {
@@ -441,7 +496,7 @@ export class MlxLLM implements LLM {
         ],
         max_tokens: 600,
         temperature: 0.7,
-      }) as MlxChatResponse;
+      }, undefined, timeoutMs) as MlxChatResponse;
 
       const content = response.choices?.[0]?.message?.content ?? "";
 
@@ -477,7 +532,7 @@ export class MlxLLM implements LLM {
       ];
       return includeLexical ? fallback : fallback.filter(q => q.type !== 'lex');
     } catch (error) {
-      console.error("MLX expandQuery error:", error);
+      console.error(`MLX expandQuery error (${this.describeTimeout(error, timeoutMs)}):`, error);
       // Fallback to original query
       const fallback: Queryable[] = [{ type: 'vec', text: query }];
       if (includeLexical) fallback.unshift({ type: 'lex', text: query });

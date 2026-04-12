@@ -6,8 +6,8 @@
 #
 # Models loaded (lazy where possible):
 #   Embedding:  Qwen3-Embedding-8B-4bit-DWQ  (loads immediately, ~4GB)
-#   Reranker:   Qwen3-Reranker-8B-mxfp8       (lazy, first /v1/rerank call, ~7.8GB)
-#   Generation: Qwen3-8B-MLX-4bit             (lazy, first /v1/generate call, ~4.3GB)
+#   Reranker:   Qwen3-8B-MLX-4bit            (lazy, first /v1/rerank call, ~4.3GB)
+#   Generation: Qwen3-8B-MLX-4bit            (lazy, first /v1/generate call, ~4.3GB)
 #
 # Usage:
 #   ./start.sh                       # Default: port 8080
@@ -116,12 +116,9 @@ else
     fi
 fi
 
-# ─── Prefer pre-downloaded local model directories when available ────────────
+# ─── Prefer stable local model directories when available ───────────────────
 
 LOCAL_QMD_MODEL_ROOT="${HOME}/.cache/qmd/models"
-if [ -z "${MLX_RERANK_MODEL:-}" ] && [ -d "${LOCAL_QMD_MODEL_ROOT}/mlx-reranker-8b" ]; then
-    export MLX_RERANK_MODEL="${LOCAL_QMD_MODEL_ROOT}/mlx-reranker-8b"
-fi
 if [ -z "${MLX_GENERATE_MODEL:-}" ] && [ -d "${LOCAL_QMD_MODEL_ROOT}/mlx-generate-8b" ]; then
     export MLX_GENERATE_MODEL="${LOCAL_QMD_MODEL_ROOT}/mlx-generate-8b"
 fi
@@ -148,7 +145,7 @@ HOST="${MLX_HOST:-127.0.0.1}"
 
 info "Starting MLX Server on http://${HOST}:${PORT}"
 info "  Embedding model:  ${MLX_MODEL_PATH:-mlx-community/Qwen3-Embedding-8B-4bit-DWQ}"
-info "  Reranker model:   ${MLX_RERANK_MODEL:-mlx-community/Qwen3-Reranker-8B-mxfp8}"
+info "  Reranker model:   ${MLX_RERANK_MODEL:-Qwen/Qwen3-8B-MLX-4bit}"
 info "  Generation model: ${MLX_GENERATE_MODEL:-Qwen/Qwen3-8B-MLX-4bit}"
 info "  Log file: ${LOG_FILE}"
 echo ""

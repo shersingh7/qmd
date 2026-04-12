@@ -7,8 +7,8 @@ Provides OpenAI-compatible endpoints for QMD integration.
 
 Models:
   Embedding:  Qwen3-Embedding-8B-4bit-DWQ  (4096 dims, ~4GB)
-  Reranker:   Qwen3-Reranker-8B-mxfp8       (~7.8GB)
-  Generation: Qwen3-8B-MLX-4bit             (~4.3GB)
+  Reranker:   Qwen3-8B-MLX-4bit            (~4.3GB, used via yes/no logit scoring)
+  Generation: Qwen3-8B-MLX-4bit            (~4.3GB)
 
 Usage:
     python3 server.py                      # Default: port 8080
@@ -44,7 +44,7 @@ LOGGER = logging.getLogger("qmd.mlx_server")
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
 DEFAULT_EMBED_MODEL = "mlx-community/Qwen3-Embedding-8B-4bit-DWQ"
-DEFAULT_RERANK_MODEL = "mlx-community/Qwen3-Reranker-8B-mxfp8"
+DEFAULT_RERANK_MODEL = "Qwen/Qwen3-8B-MLX-4bit"
 DEFAULT_GENERATE_MODEL = "Qwen/Qwen3-8B-MLX-4bit"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
@@ -262,10 +262,12 @@ class EmbeddingService:
 
 class RerankerService:
     """
-    Loads Qwen3-Reranker-8B-mxfp8 via MLX.
+    Uses Qwen3-8B-MLX-4bit as a reranker via yes/no logit scoring.
 
-    Uses the model's built-in relevance scoring — feeds query+document
-    pairs and extracts yes/no logit probabilities as relevance scores.
+    We intentionally default to the generic 8B MLX model here instead of the
+    specialized reranker artifact because the latter has been flaky/broken on
+    David's machine (missing weights in the local cache). The generic 8B model
+    is already cached and has been reliable in practice.
     """
 
     def __init__(self, model_ref: str) -> None:

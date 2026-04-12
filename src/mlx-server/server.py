@@ -440,6 +440,7 @@ class GenerateService:
         import mlx.core as mx
 
         from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
 
         with self.lock:
             response = mlx_generate(
@@ -447,7 +448,7 @@ class GenerateService:
                 self.tokenizer,
                 prompt=prompt,
                 max_tokens=max_tokens,
-                temp=temperature,
+                sampler=make_sampler(temp=temperature),
                 verbose=False,
             )
 
@@ -477,6 +478,7 @@ class GenerateService:
 
         import mlx.core as mx
         from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
 
         with self.lock:
             response = mlx_generate(
@@ -484,7 +486,7 @@ class GenerateService:
                 self.tokenizer,
                 prompt=prompt,
                 max_tokens=max_tokens,
-                temp=temperature,
+                sampler=make_sampler(temp=temperature),
                 verbose=False,
             )
 
@@ -507,9 +509,11 @@ EMBED_SERVICE = EmbeddingService(EMBED_MODEL)
 RERANK_SERVICE = RerankerService(RERANK_MODEL)
 GENERATE_SERVICE = GenerateService(GENERATE_MODEL)
 
-# Start embedding model immediately (needed for qmd embed)
-# Reranker and generator load lazily on first request
-EMBED_SERVICE.start_loading()
+# Start embedding model immediately only when requested (needed for qmd embed).
+# For rerank-only setups, keep it lazy so the server doesn't download/load a huge
+# embedding model that won't be used.
+if os.environ.get("MLX_PRELOAD_EMBED", "1").strip().lower() not in {"0", "false", "no"}:
+    EMBED_SERVICE.start_loading()
 
 
 @asynccontextmanager

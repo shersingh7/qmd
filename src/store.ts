@@ -68,6 +68,25 @@ function getLlm(store: Store): LlamaCpp | MlxLLM | OpenAILLM {
   return store.llm ?? getDefaultLlamaCpp();
 }
 
+/**
+ * Get the query-time backend for a store.
+ *
+ * This can differ from the embedding backend when the store uses an API-based
+ * embedder (e.g. OpenAI) but local generation/reranking (LlamaCpp or MLX) for
+ * query expansion and reranking.
+ */
+function getQueryLlm(store: Store): LlamaCpp | MlxLLM {
+  if (store.queryLlm) return store.queryLlm;
+  const llm = store.llm;
+  if (llm instanceof OpenAILLM || !llm) return getDefaultLlamaCpp();
+  return llm;
+}
+
+function getRerankLlm(store: Store): LlamaCpp | MlxLLM {
+  if (store.rerankLlm) return store.rerankLlm;
+  return getQueryLlm(store);
+}
+
 // =============================================================================
 // Smart Chunking - Break Point Detection
 // =============================================================================
@@ -1081,6 +1100,10 @@ export type Store = {
   dbPath: string;
   /** Optional LlamaCpp or MlxLLM instance for this store (overrides the global singleton) */
   llm?: LlamaCpp | MlxLLM | OpenAILLM;
+  /** Optional query-time backend for expansion/reranking when embeddings use a different provider */
+  queryLlm?: LlamaCpp | MlxLLM;
+  /** Optional rerank-specific backend when query expansion and reranking use different providers */
+  rerankLlm?: LlamaCpp | MlxLLM;
   close: () => void;
   ensureVecTable: (dimensions: number) => void;
 
@@ -1950,8 +1973,8 @@ export function createStore(dbPath?: string): Store {
     searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
 
     // Query expansion & reranking
-    expandQuery: (query: string, model?: string, intent?: string) => expandQuery(query, model, db, intent, store.llm),
-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => rerank(query, documents, model, db, intent, store.llm),
+    expandQuery: (query: string, model?: string, intent?: string) => expandQuery(query, model, db, intent, store.llm, getQueryLlm(store)),
+    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => rerank(query, documents, model, db, intent, store.llm, getRerankLlm(store)),
 
     // Document retrieval
     findDocument: (filename: string, options?: { includeBody?: boolean }) => findDocument(db, filename, options),
@@ -3483,7 +3506,7 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM, queryLlmOverride?: LlamaCpp | MlxLLM): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
   const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
@@ -3501,7 +3524,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
-  const llm = llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp());
+  const llm = queryLlmOverride ?? (llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp()));
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
   const results = await llm.expandQuery(query, { intent });
 
@@ -3522,7 +3545,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM): Promise<{ file: string; score: number }[]> {
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp | MlxLLM | OpenAILLM, queryLlmOverride?: LlamaCpp | MlxLLM): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 
@@ -3547,7 +3570,7 @@ export async function rerank(query: string, documents: { file: string; text: str
 
   // Rerank uncached documents using LlamaCpp
   if (uncachedDocsByChunk.size > 0) {
-    const llm = llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp());
+    const llm = queryLlmOverride ?? (llmOverride instanceof OpenAILLM ? getDefaultLlamaCpp() : (llmOverride ?? getDefaultLlamaCpp()));
     const uncachedDocs = [...uncachedDocsByChunk.values()];
     const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model });
 

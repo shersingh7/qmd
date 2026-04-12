@@ -116,13 +116,23 @@ else
     fi
 fi
 
+# ─── Prefer pre-downloaded local model directories when available ────────────
+
+LOCAL_QMD_MODEL_ROOT="${HOME}/.cache/qmd/models"
+if [ -z "${MLX_RERANK_MODEL:-}" ] && [ -d "${LOCAL_QMD_MODEL_ROOT}/mlx-reranker-8b" ]; then
+    export MLX_RERANK_MODEL="${LOCAL_QMD_MODEL_ROOT}/mlx-reranker-8b"
+fi
+if [ -z "${MLX_GENERATE_MODEL:-}" ] && [ -d "${LOCAL_QMD_MODEL_ROOT}/mlx-generate-8b" ]; then
+    export MLX_GENERATE_MODEL="${LOCAL_QMD_MODEL_ROOT}/mlx-generate-8b"
+fi
+
 # ─── Preflight checks ─────────────────────────────────────────────────────────
 
 info "Preflight checks..."
 
 # Check MLX is available
-if ! python -c "import mlx; print(f'  MLX version: {mlx.__version__}')" 2>/dev/null; then
-    error "MLX not installed. Run: pip install mlx mlx-lm"
+if ! python -c "import importlib.metadata as md; import mlx; print(f'  MLX version: {md.version(\"mlx\")}')" 2>/dev/null; then
+    error "MLX not installed or import check failed. Run: pip install mlx mlx-lm"
     exit 1
 fi
 

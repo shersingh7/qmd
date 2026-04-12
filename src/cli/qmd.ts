@@ -124,35 +124,68 @@ function getStore(): ReturnType<typeof createStore> {
       // Config may not exist yet — that's fine, DB works without it
     }
 
-    // Check for embedding provider (independent of config file)
+    // Check for embedding/query providers (independent of config file)
     const embedProvider = process.env.QMD_EMBED_PROVIDER?.toLowerCase();
+    const queryProvider = process.env.QMD_QUERY_PROVIDER?.toLowerCase();
+    const generateProvider = process.env.QMD_GENERATE_PROVIDER?.toLowerCase() || queryProvider;
+    const rerankProvider = process.env.QMD_RERANK_PROVIDER?.toLowerCase() || queryProvider;
+    let configModels: { embed?: string; generate?: string; rerank?: string } | undefined;
+    try {
+      const config = loadConfig();
+      configModels = config.models;
+    } catch {
+      configModels = undefined;
+    }
+
+    const buildLocalQueryLlm = () => new LlamaCpp({
+      embedModel: configModels?.embed,
+      generateModel: configModels?.generate,
+      rerankModel: configModels?.rerank,
+    });
+
     if (embedProvider === 'mlx') {
-      setDefaultLlamaCpp(new MlxLLM() as any);
+      const mlxLlm = new MlxLLM({
+        embedModel: process.env.QMD_EMBED_MODEL || configModels?.embed,
+        generateModel: process.env.QMD_GENERATE_MODEL || configModels?.generate,
+        rerankModel: process.env.QMD_RERANK_MODEL || configModels?.rerank,
+      });
+      store.llm = mlxLlm;
+      store.queryLlm = mlxLlm;
+      setDefaultLlamaCpp(buildLocalQueryLlm());
     } else if (embedProvider === 'openai') {
-      // OpenAI for embeddings, LlamaCpp for rerank/generate
+      // OpenAI for embeddings, separate local/MLX backend for rerank/generate
       const openaiLlm = new OpenAILLM({
         embedModel: process.env.QMD_EMBED_MODEL,
+        generateModel: process.env.QMD_GENERATE_MODEL || configModels?.generate,
+        rerankModel: process.env.QMD_RERANK_MODEL || configModels?.rerank,
       });
       if (!process.env.QMD_OPENAI_API_KEY) {
         console.error('Error: QMD_OPENAI_API_KEY is required when QMD_EMBED_PROVIDER=openai');
         process.exit(1);
       }
-      setDefaultLlamaCpp(openaiLlm as any);
-      process.stderr.write(`[QMD CLI] Using OpenAI for embeddings (${openaiLlm.embedModelName}, ${openaiLlm.embedDimensions}d)\n`);
+      store.llm = openaiLlm;
+      store.queryLlm = generateProvider === 'mlx'
+        ? new MlxLLM({
+            embedModel: process.env.QMD_EMBED_MODEL || configModels?.embed,
+            generateModel: process.env.QMD_GENERATE_MODEL || configModels?.generate,
+            rerankModel: process.env.QMD_RERANK_MODEL || configModels?.rerank,
+          })
+        : buildLocalQueryLlm();
+      store.rerankLlm = rerankProvider === 'mlx'
+        ? new MlxLLM({
+            embedModel: process.env.QMD_EMBED_MODEL || configModels?.embed,
+            generateModel: process.env.QMD_GENERATE_MODEL || configModels?.generate,
+            rerankModel: process.env.QMD_RERANK_MODEL || configModels?.rerank,
+          })
+        : store.queryLlm;
+      setDefaultLlamaCpp(buildLocalQueryLlm());
+      process.stderr.write(`[QMD CLI] Using OpenAI for embeddings (${openaiLlm.embedModelName}, ${openaiLlm.embedDimensions}d) + ${generateProvider === 'mlx' ? 'MLX' : 'LlamaCpp'} for generation/query-expansion + ${rerankProvider === 'mlx' ? 'MLX' : 'LlamaCpp'} for rerank\n`);
     } else {
       // Default: use LlamaCpp with optional config
-      try {
-        const config = loadConfig();
-        if (config.models) {
-          setDefaultLlamaCpp(new LlamaCpp({
-            embedModel: config.models.embed,
-            generateModel: config.models.generate,
-            rerankModel: config.models.rerank,
-          }));
-        }
-      } catch {
-        // Config may not exist yet — that's fine
-      }
+      const localLlm = buildLocalQueryLlm();
+      store.llm = localLlm;
+      store.queryLlm = localLlm;
+      setDefaultLlamaCpp(localLlm);
     }
   }
   return store;

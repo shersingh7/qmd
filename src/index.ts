@@ -126,12 +126,15 @@ export {
   embedWithMlx,
   embedBatchWithMlx,
   embedBatchBinaryWithMlx,
+  embedBatchConcurrent,
   mlxHealth,
   mlxMemory,
+  mlxStats,
   isMlxAvailable,
   type MlxEmbedConfig,
   type MlxHealth,
   type MlxMemory,
+  type MlxStats,
 } from "./mlx.js";
 
 /**
@@ -389,7 +392,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     rerankModel: config?.models?.rerank,
     embedBackend: config?.models?.embedBackend ?? getEmbedBackend(),
     mlxUrl: config?.models?.mlxUrl,
+    mlxDtype: config?.models?.mlxDtype ?? 'float32',
     mlxFallback: config?.models?.mlxFallback ?? true,
+    mlxConcurrency: config?.models?.mlxConcurrency ?? 2,
     inactivityTimeoutMs: 5 * 60 * 1000,
     disposeModelsOnInactivity: true,
   });

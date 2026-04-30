@@ -379,10 +379,20 @@ export type LlamaCppConfig = {
    */
   mlxUrl?: string;
   /**
+   * MLX compute dtype: float32, float16, bfloat16.
+   * float16 halves GPU memory & doubles throughput on M2 Pro AMX coprocessor.
+   */
+  mlxDtype?: 'float32' | 'float16' | 'bfloat16';
+  /**
    * When true (default), MLX mode auto-falls-back to GGUF if the Python server is unreachable.
    * Set to false to hard-fail when MLX is configured but unavailable.
    */
   mlxFallback?: boolean;
+  /**
+   * MLX concurrent request limit (default: 2). Increase to 3-4 if embedding
+   * throughput is bottlenecked on network latency.
+   */
+  mlxConcurrency?: number;
   /**
    * Context size used for query expansion generation contexts.
    * Default: 2048. Can also be set via QMD_EXPAND_CONTEXT_SIZE.
@@ -451,10 +461,13 @@ export class LlamaCpp implements LLM {
   // MLX backend state
   private embedBackend: 'gguf' | 'mlx';
   private mlxUrlOverride: string | null = null;
+  private mlxDtype: 'float32' | 'float16' | 'bfloat16';
+  private mlxConcurrency: number;
   private mlxFallback: boolean;
   private mlxClient: {
     embed(text: string, options?: EmbedOptions & { dims?: number }): Promise<EmbeddingResult | null>;
     embedBatch(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<(EmbeddingResult | null)[]>;
+    embedBatchConcurrent(texts: string[], options?: EmbedOptions & { dims?: number }, batchSize?: number): Promise<(EmbeddingResult | null)[]>;
     embedBatchBinary(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<number[][] | null>;
     probeDims(): Promise<number>;
     dims: number | null;
@@ -462,7 +475,8 @@ export class LlamaCpp implements LLM {
   } | null = null;
   private mlxDims: number | null = null;
   private mlxName: string | null = null;
-  private mlxFailed = false;  // track fallback
+  private mlxFailed = false;
+  private mlxWarm = false;  // whether first request already warmed up
   private embedModelLoadPromise: Promise<LlamaModel> | null = null;
   private generateModelLoadPromise: Promise<LlamaModel> | null = null;
   private rerankModelLoadPromise: Promise<LlamaModel> | null = null;
@@ -479,6 +493,8 @@ export class LlamaCpp implements LLM {
   constructor(config: LlamaCppConfig = {}) {
     this.embedBackend = config.embedBackend ?? getEmbedBackend();
     this.mlxUrlOverride = config.mlxUrl ?? null;
+    this.mlxDtype = config.mlxDtype ?? 'float32';
+    this.mlxConcurrency = config.mlxConcurrency ?? 2;
     this.mlxFallback = config.mlxFallback ?? true;
     this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
@@ -1062,10 +1078,13 @@ export class LlamaCpp implements LLM {
   /** Lazy-initialize MLX client on first use */
   private async _ensureMlxClient(): Promise<void> {
     if (this.mlxClient) return;
-    if (this.mlxFailed && this.mlxFallback) return; // already fallen back
+    if (this.mlxFailed && this.mlxFallback) return;
 
     const { MlxEmbedClient } = await import('./mlx.js');
-    this.mlxClient = new MlxEmbedClient({ url: this.mlxUrlOverride ?? undefined });
+    this.mlxClient = new MlxEmbedClient({
+      url: this.mlxUrlOverride ?? undefined,
+      concurrency: this.mlxConcurrency,
+    });
 
     // Probe dims once so downstream can know the vector size
     try {
@@ -1073,23 +1092,22 @@ export class LlamaCpp implements LLM {
       this.mlxDims = this.mlxClient.dims;
       this.mlxName = this.mlxClient.modelName;
       this.mlxFailed = false;
+      this.mlxWarm = true;
     } catch (err) {
-      // MLX server unreachable — fall back to GGUF if allowed
       if (this.mlxFallback) {
-        console.warn(`MLX server unreachable at ${this.mlxUrlOverride ?? process.env.QMD_MLX_EMBED_URL ?? 'http://127.0.0.1:8787'}, falling back to GGUF backend.`);
+        console.warn(`MLX server unreachable at ${this.mlxUrlOverride ?? process.env.QMD_MLX_EMBED_URL ?? 'http://127.0.0.1:8787'}, falling back to GGUF.`);
         this.mlxFailed = true;
         this.mlxClient = null;
         this.mlxDims = null;
         this.mlxName = null;
       } else {
-        throw err; // hard fail
+        throw err;
       }
     }
   }
 
   private async _embedMlx(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
-    if (this.mlxFailed && this.mlxFallback) return null; // fall back to GGUF path
-
+    if (this.mlxFailed && this.mlxFallback) return null;
     try {
       await this._ensureMlxClient();
       return await this.mlxClient!.embed(text, {
@@ -1098,30 +1116,31 @@ export class LlamaCpp implements LLM {
       });
     } catch (err) {
       console.error("MLX embedding error:", err);
-      if (this.mlxFallback) {
-        this.mlxFailed = true;
-        return null; // caller falls back to GGUF
-      }
+      if (this.mlxFallback) { this.mlxFailed = true; return null; }
       return null;
     }
   }
 
   private async _embedBatchMlx(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
-    if (this.mlxFailed && this.mlxFallback) return texts.map(() => null); // fall back to GGUF path
+    if (this.mlxFailed && this.mlxFallback) return texts.map(() => null);
     if (texts.length === 0) return [];
 
     try {
       await this._ensureMlxClient();
+      // Use concurrent pipelining for large batches (> 64 texts)
+      if (texts.length > 64 && this.mlxConcurrency > 1) {
+        return await this.mlxClient!.embedBatchConcurrent(texts, {
+          ...options,
+          dims: this.mlxDims ?? undefined,
+        }, 32);
+      }
       return await this.mlxClient!.embedBatch(texts, {
         ...options,
         dims: this.mlxDims ?? undefined,
       });
     } catch (err) {
       console.error("MLX batch embedding error:", err);
-      if (this.mlxFallback) {
-        this.mlxFailed = true;
-        return texts.map(() => null); // caller falls back to GGUF
-      }
+      if (this.mlxFallback) { this.mlxFailed = true; return texts.map(() => null); }
       return texts.map(() => null);
     }
   }

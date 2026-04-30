@@ -379,6 +379,11 @@ export type LlamaCppConfig = {
    */
   mlxUrl?: string;
   /**
+   * When true (default), MLX mode auto-falls-back to GGUF if the Python server is unreachable.
+   * Set to false to hard-fail when MLX is configured but unavailable.
+   */
+  mlxFallback?: boolean;
+  /**
    * Context size used for query expansion generation contexts.
    * Default: 2048. Can also be set via QMD_EXPAND_CONTEXT_SIZE.
    */
@@ -445,15 +450,19 @@ export class LlamaCpp implements LLM {
 
   // MLX backend state
   private embedBackend: 'gguf' | 'mlx';
+  private mlxUrlOverride: string | null = null;
+  private mlxFallback: boolean;
   private mlxClient: {
-    embed(text: string): Promise<EmbeddingResult | null>;
-    embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]>;
+    embed(text: string, options?: EmbedOptions & { dims?: number }): Promise<EmbeddingResult | null>;
+    embedBatch(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<(EmbeddingResult | null)[]>;
+    embedBatchBinary(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<number[][] | null>;
     probeDims(): Promise<number>;
     dims: number | null;
     modelName: string | null;
   } | null = null;
   private mlxDims: number | null = null;
   private mlxName: string | null = null;
+  private mlxFailed = false;  // track fallback
   private embedModelLoadPromise: Promise<LlamaModel> | null = null;
   private generateModelLoadPromise: Promise<LlamaModel> | null = null;
   private rerankModelLoadPromise: Promise<LlamaModel> | null = null;
@@ -469,6 +478,8 @@ export class LlamaCpp implements LLM {
 
   constructor(config: LlamaCppConfig = {}) {
     this.embedBackend = config.embedBackend ?? getEmbedBackend();
+    this.mlxUrlOverride = config.mlxUrl ?? null;
+    this.mlxFallback = config.mlxFallback ?? true;
     this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
@@ -479,6 +490,10 @@ export class LlamaCpp implements LLM {
   }
 
   get embedModelName(): string {
+    // Return MLX model name when MLX backend is active and loaded
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      return this.mlxName ?? this.embedModelUri;
+    }
     return this.embedModelUri;
   }
 
@@ -929,8 +944,12 @@ export class LlamaCpp implements LLM {
 
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
     // MLX fast-path: route to external MLX server for GPU-accelerated embeddings
-    if (this.embedBackend === 'mlx') {
-      return this._embedMlx(text, options);
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      const result = await this._embedMlx(text, options);
+      // If MLX succeeded, return immediately. If it returned null due to fallback,
+      // fall through to GGUF below.
+      if (result) return result;
+      if (!this.mlxFailed) return null; // hard failure, don't retry
     }
 
     // Ping activity at start to keep models alive during this operation
@@ -962,8 +981,12 @@ export class LlamaCpp implements LLM {
    * Uses Promise.all for parallel embedding - node-llama-cpp handles batching internally
    */
   async embedBatch(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
-    if (this.embedBackend === 'mlx') {
-      return this._embedBatchMlx(texts, options);
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      const results = await this._embedBatchMlx(texts, options);
+      // If MLX returned all nulls (fallback triggered), fall through to GGUF.
+      // If it returned real results, use them.
+      if (results.some((r) => r !== null)) return results;
+      if (!this.mlxFailed) return texts.map(() => null); // hard failure
     }
 
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
@@ -1039,34 +1062,66 @@ export class LlamaCpp implements LLM {
   /** Lazy-initialize MLX client on first use */
   private async _ensureMlxClient(): Promise<void> {
     if (this.mlxClient) return;
+    if (this.mlxFailed && this.mlxFallback) return; // already fallen back
+
     const { MlxEmbedClient } = await import('./mlx.js');
-    this.mlxClient = new MlxEmbedClient({ url: undefined });  // reads QMD_MLX_EMBED_URL
+    this.mlxClient = new MlxEmbedClient({ url: this.mlxUrlOverride ?? undefined });
+
     // Probe dims once so downstream can know the vector size
     try {
       await this.mlxClient.probeDims();
       this.mlxDims = this.mlxClient.dims;
       this.mlxName = this.mlxClient.modelName;
-    } catch {
-      // leave dims null; it'll be inferred per-request
+      this.mlxFailed = false;
+    } catch (err) {
+      // MLX server unreachable — fall back to GGUF if allowed
+      if (this.mlxFallback) {
+        console.warn(`MLX server unreachable at ${this.mlxUrlOverride ?? process.env.QMD_MLX_EMBED_URL ?? 'http://127.0.0.1:8787'}, falling back to GGUF backend.`);
+        this.mlxFailed = true;
+        this.mlxClient = null;
+        this.mlxDims = null;
+        this.mlxName = null;
+      } else {
+        throw err; // hard fail
+      }
     }
   }
 
   private async _embedMlx(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
+    if (this.mlxFailed && this.mlxFallback) return null; // fall back to GGUF path
+
     try {
       await this._ensureMlxClient();
-      return await this.mlxClient!.embed(text);
+      return await this.mlxClient!.embed(text, {
+        ...options,
+        dims: this.mlxDims ?? undefined,
+      });
     } catch (err) {
       console.error("MLX embedding error:", err);
+      if (this.mlxFallback) {
+        this.mlxFailed = true;
+        return null; // caller falls back to GGUF
+      }
       return null;
     }
   }
 
-  private async _embedBatchMlx(texts: string[], _options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
+  private async _embedBatchMlx(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
+    if (this.mlxFailed && this.mlxFallback) return texts.map(() => null); // fall back to GGUF path
+    if (texts.length === 0) return [];
+
     try {
       await this._ensureMlxClient();
-      return await this.mlxClient!.embedBatch(texts);
+      return await this.mlxClient!.embedBatch(texts, {
+        ...options,
+        dims: this.mlxDims ?? undefined,
+      });
     } catch (err) {
       console.error("MLX batch embedding error:", err);
+      if (this.mlxFallback) {
+        this.mlxFailed = true;
+        return texts.map(() => null); // caller falls back to GGUF
+      }
       return texts.map(() => null);
     }
   }
@@ -1384,6 +1439,8 @@ export class LlamaCpp implements LLM {
     this.mlxClient = null;
     this.mlxDims = null;
     this.mlxName = null;
+    this.mlxFailed = false;
+    this.mlxUrlOverride = null;
 
     // Clear any in-flight load/create promises
     this.embedModelLoadPromise = null;

@@ -1,14 +1,98 @@
-# QMD - Query Markup Documents
+# QMD — Query Markup Documents (MLX-Native)
 
-An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
+An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking — all running locally. Two embedding backends: **MLX-native** (Apple Silicon GPU, 2-5× faster) or **GGUF** (node-llama-cpp, CPU/Metal).
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
 You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
-## Quick Start
+---
+
+## MLX-Native Embeddings (Apple Silicon)
+
+On M-series Macs, QMD can use **native MLX embedding** — a dedicated Python HTTP server that runs embedding models directly on the GPU via Apple's MLX framework. This is 2-5× faster than GGUF embeddings and uses Metal GPU acceleration natively.
+
+### Why MLX over GGUF?
+
+| | GGUF (node-llama-cpp) | MLX-Native |
+|---|---|---|
+| **GPU** | Indirect (Metal via llama.cpp) | Direct (MLX → Metal Compute) |
+| **JIT compilation** | No | `@mx.compile` fused kernel graphs |
+| **Batch throughput** | ~1× | 2-5× |
+| **Memory** | CPU + GPU copies | Unified memory, zero-copy |
+| **Precision** | Quantized only (Q8/Q4) | float16 or float32 |
+| **Wire format** | JSON float arrays | Binary Float32 (zero-copy) |
+
+### Quick Start (MLX Mode)
+
+```bash
+# 1. Install Python deps
+pip install -r scripts/mlx_server_requirements.txt
+
+# 2. Start the MLX embedding server
+python scripts/mlx_embed_server.py \
+  --model mlx-community/nomic-embed-text-v2-moe \
+  --dtype float16 \
+  --preload \
+  --port 8787
+
+# 3. Set backend to MLX
+export QMD_EMBED_BACKEND=mlx
+export QMD_MLX_EMBED_URL=http://127.0.0.1:8787
+
+# 4. Use QMD as normal — embeddings now use MLX
+qmd embed
+qmd query "your search query"
+```
+
+The MLX server provides these endpoints:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/embed` | POST | JSON embedding (one or batch) |
+| `/embed-bin` | POST | Binary Float32 embedding (zero-copy, fast) |
+| `/health` | GET | Liveness check |
+| `/ready` | GET | Server ready (model loaded) |
+| `/memory` | GET | GPU memory usage |
+| `/stats` | GET | Throughput stats, JIT compiled shapes |
+
+### MLX Server Flags
+
+```
+--model PATH         HuggingFace model ID or local path (required)
+--port 8787          Listen port
+--host 127.0.0.1     Bind address
+--dtype float16      Precision: float32 or float16 (half memory, faster matmul on AMX)
+--quantization N     MLX quantization bits (4 or 8)
+--preload            Warm GPU at startup (pre-compiles Metal shaders)
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `QMD_EMBED_BACKEND` | `gguf` | `mlx` or `gguf` |
+| `QMD_MLX_EMBED_URL` | `http://127.0.0.1:8787` | MLX server URL |
+| `QMD_MLX_DTYPE` | `float32` | `float16` or `float32` |
+| `QMD_MLX_CONCURRENCY` | `2` | Parallel batch requests |
+| `QMD_MLX_FALLBACK` | `true` | Fall back to GGUF if MLX unreachable |
+| `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
+
+### MLX Performance Internals
+
+The Python server leverages three Apple Silicon-specific optimizations:
+
+1. **`@mx.compile` JIT** — Wraps the forward pass + mean pooling + L2 normalization into a single fused Metal Compute graph. On first call, MLX traces the computation, compiles it to Metal shaders, and caches the graph. Same-shape batches reuse the compiled trace — no Python overhead, no intermediate allocations, no redundant kernel launches.
+
+2. **Zero-copy binary export** — Embeddings live in Apple unified memory (GPU and CPU share the same physical RAM). The `/embed-bin` endpoint creates a `numpy` array backed by the same memory (`copy=False`) and writes raw `Float32` bytes directly to the socket. No `.tolist()` Python float boxing, no `struct.pack` loops.
+
+3. **Concurrent pipelining** — The TypeScript client (`src/mlx.ts`) splits large batches (>64 texts) into sub-batches of 32 and fires `concurrency` requests in parallel. On M2 Pro/Max with ample GPU bandwidth, 2-3 parallel forward passes saturate the GPU pipeline without contention.
+
+---
+
+## Quick Start (GGUF / Default Mode)
 
 ```sh
 # Install globally (Node or Bun)
@@ -163,6 +247,55 @@ const results = await store.search({ query: "authentication flow" })
 console.log(results.map(r => `${r.title} (${Math.round(r.score * 100)}%)`))
 
 await store.close()
+```
+
+### SDK: MLX Embedding Backend
+
+Configure MLX embeddings programmatically:
+
+```typescript
+import { createStore } from '@tobilu/qmd'
+
+const store = await createStore({
+  dbPath: './my-index.sqlite',
+  config: {
+    collections: {
+      docs: { path: '/path/to/docs', pattern: '**/*.md' },
+    },
+    models: {
+      embedBackend: 'mlx',
+      mlxUrl: 'http://127.0.0.1:8787',
+      mlxDtype: 'float16',
+      mlxConcurrency: 2,
+      mlxFallback: true,     // degrade to GGUF if MLX down
+    },
+  },
+})
+```
+
+Or use the MLX client directly for standalone embedding:
+
+```typescript
+import { embedWithMlx, embedBatchConcurrent, mlxStats } from '@tobilu/qmd'
+
+// Single embedding
+const vec = await embedWithMlx("what is the meaning of life?")
+// vec: Float32Array(768)
+
+// Batch embedding with concurrent pipelining
+const batch = await embedBatchConcurrent([
+  "first query",
+  "second query",
+  // ... hundreds more
+], {
+  url: 'http://127.0.0.1:8787',
+  concurrency: 2,
+  dtype: 'float16',
+})
+
+// Check MLX server stats
+const stats = await mlxStats('http://127.0.0.1:8787')
+console.log(stats) // { avg_ms: 12.3, compiled_shapes: [[1,512], [32,512]], ... }
 ```
 
 #### Store Creation
@@ -372,6 +505,8 @@ await store.close()
 
 The SDK requires explicit `dbPath` — no defaults are assumed. This makes it safe to embed in any application without side effects.
 
+---
+
 ## Architecture
 
 ```
@@ -432,6 +567,16 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                           │  Top 4-10: 60% RRF    │
                           │  Top 11+:  40% RRF    │
                           └───────────────────────┘
+
+                        ┌──────────────────────────┐
+                        │   Embedding Backends     │
+                        ├────────────┬─────────────┤
+                        │  MLX       │  GGUF       │
+                        │  (GPU)     │  (CPU/Metal)│
+                        │  @mx.comp  │  node-llama │
+                        │  binary    │  JSON       │
+                        │  float16   │  Q8_0       │
+                        └────────────┴─────────────┘
 ```
 
 ## Score Normalization & Fusion
@@ -481,6 +626,12 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
   brew install sqlite
   ```
 
+### MLX Mode (Apple Silicon only)
+
+- **macOS** on Apple Silicon (M1/M2/M3/M4)
+- **Python** >= 3.10
+- **MLX** and **mlx-lm** (install via `scripts/mlx_server_requirements.txt`)
+
 ### GGUF Models (via node-llama-cpp)
 
 QMD uses three local GGUF models (auto-downloaded on first use):
@@ -526,8 +677,8 @@ bun install -g @tobilu/qmd
 ### Development
 
 ```sh
-git clone https://github.com/tobi/qmd
-cd qmd
+git clone https://github.com/shersingh7/qmd-mlx-search
+cd qmd-mlx-search
 npm install
 npm link
 ```
@@ -792,12 +943,6 @@ vectors_vec     -- sqlite-vec vector index (hash_seq key)
 llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 ```
 
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
-
 ## How It Works
 
 ### Indexing Flow
@@ -820,8 +965,9 @@ Collection ──► Glob Pattern ──► Markdown Files ──► Parse Title
 Documents are chunked into ~900-token pieces with 15% overlap using smart boundary detection:
 
 ```
-Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► node-llama-cpp ──► Store Vectors
-                │                           "title | text"        embedBatch()
+Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► Backend ──► Store Vectors
+                │                           "title | text"        MLX or
+                │                                                 node-llama-cpp
                 │
                 └─► Chunks stored with:
                     - hash: document hash

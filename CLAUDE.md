@@ -18,7 +18,7 @@ qmd get <file>                    # Get document by path or docid (#abc123)
 qmd multi-get <pattern>           # Get multiple docs by glob or comma-separated list
 qmd status                        # Show index status and collections
 qmd update [--pull]               # Re-index all collections (--pull: git pull first)
-qmd embed                         # Generate vector embeddings (uses node-llama-cpp)
+qmd embed                         # Generate vector embeddings (MLX or GGUF, see QMD_EMBED_BACKEND)
 qmd query <query>                 # Search with query expansion + reranking (recommended)
 qmd search <query>                # Full-text keyword search (BM25, no LLM)
 qmd vsearch <query>               # Vector similarity search (no reranking)
@@ -115,6 +115,15 @@ qmd multi-get "#abc123, #def456"
 --json, --csv, --md, --xml, --files
 ```
 
+## MLX Embedding Server
+
+```sh
+# Start MLX embedding server (Apple Silicon only)
+python scripts/mlx_embed_server.py --model <model> --dtype float16 --preload
+
+# Env vars: QMD_EMBED_BACKEND=mlx, QMD_MLX_EMBED_URL=http://127.0.0.1:8787
+```
+
 ## Development
 
 ```sh
@@ -135,7 +144,8 @@ bun test --preload ./src/test-preload.ts test/
 
 - SQLite FTS5 for full-text search (BM25)
 - sqlite-vec for vector similarity search
-- node-llama-cpp for embeddings (embeddinggemma), reranking (qwen3-reranker), and query expansion (Qwen3)
+- Dual embedding backends: MLX-native (Apple Silicon GPU, 2-5x faster) or node-llama-cpp GGUF (CPU/Metal)
+- node-llama-cpp for reranking (qwen3-reranker) and query expansion (Qwen3)
 - Reciprocal Rank Fusion (RRF) for combining results
 - Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries
 - AST-aware chunking: use `--chunk-strategy auto` to chunk code files (.ts/.js/.py/.go/.rs) at function/class/import boundaries via tree-sitter. Default is `regex` (existing behavior). Markdown and unknown file types always use regex chunking.

@@ -40,6 +40,10 @@ export interface ModelsConfig {
   embed?: string;
   rerank?: string;
   generate?: string;
+  /** Embedding backend: 'gguf' (default, node-llama-cpp) or 'mlx' (Python HTTP server) */
+  embedBackend?: 'gguf' | 'mlx';
+  /** MLX server URL when embedBackend='mlx' (default: http://127.0.0.1:8787) */
+  mlxUrl?: string;
 }
 
 /**

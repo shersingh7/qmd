@@ -66,6 +66,7 @@ import {
 } from "./store.js";
 import {
   LlamaCpp,
+  getEmbedBackend,
 } from "./llm.js";
 import {
   setConfigSource,
@@ -118,6 +119,18 @@ export { getDefaultDbPath } from "./store.js";
 
 // Re-export Maintenance class for CLI housekeeping operations
 export { Maintenance } from "./maintenance.js";
+
+// Re-export MLX embedding client for SDK consumers
+export {
+  MlxEmbedClient,
+  embedWithMlx,
+  embedBatchWithMlx,
+  mlxHealth,
+  isMlxAvailable,
+  type MlxEmbedConfig,
+  type MlxHealth,
+  type MlxError,
+} from "./mlx.js";
 
 /**
  * Progress info emitted during update() for each file processed.
@@ -367,10 +380,13 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
   // Create a per-store LlamaCpp instance — lazy-loads models on first use,
   // auto-unloads after 5 min inactivity to free VRAM.
+  // Supports MLX backend for GPU-accelerated embeddings via external Python server.
   const llm = new LlamaCpp({
     embedModel: config?.models?.embed,
     generateModel: config?.models?.generate,
     rerankModel: config?.models?.rerank,
+    embedBackend: config?.models?.embedBackend ?? getEmbedBackend(),
+    mlxUrl: config?.models?.mlxUrl,
     inactivityTimeoutMs: 5 * 60 * 1000,
     disposeModelsOnInactivity: true,
   });

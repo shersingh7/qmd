@@ -351,11 +351,33 @@ export interface LLM {
 // node-llama-cpp Implementation
 // =============================================================================
 
+// Embed via MLX when QMD_EMBED_BACKEND=mlx
+export function getEmbedBackend(): 'gguf' | 'mlx' {
+  const raw = process.env.QMD_EMBED_BACKEND?.trim().toLowerCase() ?? '';
+  return raw === 'mlx' ? 'mlx' : 'gguf';
+}
+
+export async function isMlxBackendAvailable(): Promise<boolean> {
+  if (getEmbedBackend() !== 'mlx') return false;
+  const { isMlxAvailable } = await import('./mlx.js');
+  return isMlxAvailable();
+}
+
 export type LlamaCppConfig = {
   embedModel?: string;
   generateModel?: string;
   rerankModel?: string;
   modelCacheDir?: string;
+  /**
+   * Embedding backend: 'gguf' (node-llama-cpp, default) or 'mlx' (HTTP server).
+   * Can also be set via QMD_EMBED_BACKEND env var.
+   */
+  embedBackend?: 'gguf' | 'mlx';
+  /**
+   * MLX server URL when embedBackend='mlx'.
+   * Defaults to QMD_MLX_EMBED_URL env or http://127.0.0.1:8787
+   */
+  mlxUrl?: string;
   /**
    * Context size used for query expansion generation contexts.
    * Default: 2048. Can also be set via QMD_EXPAND_CONTEXT_SIZE.
@@ -421,7 +443,17 @@ export class LlamaCpp implements LLM {
   private modelCacheDir: string;
   private expandContextSize: number;
 
-  // Ensure we don't load the same model/context concurrently (which can allocate duplicate VRAM).
+  // MLX backend state
+  private embedBackend: 'gguf' | 'mlx';
+  private mlxClient: {
+    embed(text: string): Promise<EmbeddingResult | null>;
+    embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]>;
+    probeDims(): Promise<number>;
+    dims: number | null;
+    modelName: string | null;
+  } | null = null;
+  private mlxDims: number | null = null;
+  private mlxName: string | null = null;
   private embedModelLoadPromise: Promise<LlamaModel> | null = null;
   private generateModelLoadPromise: Promise<LlamaModel> | null = null;
   private rerankModelLoadPromise: Promise<LlamaModel> | null = null;
@@ -436,6 +468,7 @@ export class LlamaCpp implements LLM {
 
 
   constructor(config: LlamaCppConfig = {}) {
+    this.embedBackend = config.embedBackend ?? getEmbedBackend();
     this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
@@ -895,6 +928,11 @@ export class LlamaCpp implements LLM {
   }
 
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
+    // MLX fast-path: route to external MLX server for GPU-accelerated embeddings
+    if (this.embedBackend === 'mlx') {
+      return this._embedMlx(text, options);
+    }
+
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
@@ -924,6 +962,10 @@ export class LlamaCpp implements LLM {
    * Uses Promise.all for parallel embedding - node-llama-cpp handles batching internally
    */
   async embedBatch(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
+    if (this.embedBackend === 'mlx') {
+      return this._embedBatchMlx(texts, options);
+    }
+
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
@@ -986,6 +1028,45 @@ export class LlamaCpp implements LLM {
       return chunkResults.flat();
     } catch (error) {
       console.error("Batch embedding error:", error);
+      return texts.map(() => null);
+    }
+  }
+
+  // ==========================================================================
+  // MLX Embedding Backend
+  // ==========================================================================
+
+  /** Lazy-initialize MLX client on first use */
+  private async _ensureMlxClient(): Promise<void> {
+    if (this.mlxClient) return;
+    const { MlxEmbedClient } = await import('./mlx.js');
+    this.mlxClient = new MlxEmbedClient({ url: undefined });  // reads QMD_MLX_EMBED_URL
+    // Probe dims once so downstream can know the vector size
+    try {
+      await this.mlxClient.probeDims();
+      this.mlxDims = this.mlxClient.dims;
+      this.mlxName = this.mlxClient.modelName;
+    } catch {
+      // leave dims null; it'll be inferred per-request
+    }
+  }
+
+  private async _embedMlx(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
+    try {
+      await this._ensureMlxClient();
+      return await this.mlxClient!.embed(text);
+    } catch (err) {
+      console.error("MLX embedding error:", err);
+      return null;
+    }
+  }
+
+  private async _embedBatchMlx(texts: string[], _options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
+    try {
+      await this._ensureMlxClient();
+      return await this.mlxClient!.embedBatch(texts);
+    } catch (err) {
+      console.error("MLX batch embedding error:", err);
       return texts.map(() => null);
     }
   }
@@ -1298,6 +1379,11 @@ export class LlamaCpp implements LLM {
     this.generateModel = null;
     this.rerankModel = null;
     this.llama = null;
+
+    // Clear MLX state
+    this.mlxClient = null;
+    this.mlxDims = null;
+    this.mlxName = null;
 
     // Clear any in-flight load/create promises
     this.embedModelLoadPromise = null;

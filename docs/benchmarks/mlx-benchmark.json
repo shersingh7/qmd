@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-09-07T02:40:51Z",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "processor": "arm",
+    "version": "Darwin Kernel Version 27.0.0: Tue Aug 11 22:06:20 PDT 2026; root:xnu-13432.1.9~3/RELEASE_ARM64_T6020",
+    "python": "3.12.13"
+  },
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "model": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "",
+    "pooling": "mean",
+    "nativeDimensions": 384,
+    "outputDimensions": 384,
+    "maxTokens": 2048,
+    "normalized": true,
+    "dtype": "float32",
+    "quantization": "bf16"
+  },
+  "benchmarks": [
+    {
+      "batch_size": 1,
+      "json": {
+        "p50_ms": 3.98,
+        "p95_ms": 4.51,
+        "texts_per_sec": 251.1
+      },
+      "binary": {
+        "p50_ms": 3.72,
+        "p95_ms": 3.79,
+        "texts_per_sec": 269.0
+      },
+      "memory_mb": {
+        "active_mb": 86.1,
+        "peak_mb": 120.7,
+        "model_mb": 0.0
+      }
+    },
+    {
+      "batch_size": 8,
+      "json": {
+        "p50_ms": 7.41,
+        "p95_ms": 7.96,
+        "texts_per_sec": 1079.8
+      },
+      "binary": {
+        "p50_ms": 4.93,
+        "p95_ms": 5.28,
+        "texts_per_sec": 1621.4
+      },
+      "memory_mb": {
+        "active_mb": 86.1,
+        "peak_mb": 123.2,
+        "model_mb": 0.0
+      }
+    },
+    {
+      "batch_size": 32,
+      "json": {
+        "p50_ms": 19.13,
+        "p95_ms": 21.77,
+        "texts_per_sec": 1673.1
+      },
+      "binary": {
+        "p50_ms": 10.7,
+        "p95_ms": 12.38,
+        "texts_per_sec": 2989.6
+      },
+      "memory_mb": {
+        "active_mb": 86.1,
+        "peak_mb": 179.4,
+        "model_mb": 0.0
+      }
+    }
+  ]
+}

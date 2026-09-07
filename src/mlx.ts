@@ -1,27 +1,27 @@
 /**
- * mlx.ts — MLX Embedding Client (zero-copy HTTP bridge to Python MLX server)
+ * mlx.ts — MLX Embedding Client (Bounded HTTP bridge to Python MLX server)
  *
- * Designed for maximum throughput on M2 Pro 32GB:
- *   - Float32Array zero-copy binary decoder (single constructor, no per-float loop)
- *   - Concurrent batch pipelining: fires next request before previous resolves
- *   - Auto binary protocol for batches > 16 texts
- *   - Connection keep-alive for TCP handshake amortization
+ * Metal-accelerated embedding transport for Apple Silicon MacBooks:
+ *   - Zero-copy Float32Array binary decoder with strict length and value checks
+ *   - Full-deadline AbortSignal covering headers + body consumption
+ *   - Bounded concurrent batch pipelining preserving order and cardinality
+ *   - Auto binary protocol for bulk batches (>= 16 texts)
+ *   - Connection keep-alive and descriptor negotiation
  *
- * The server runs separately as a Python process:
- *   python scripts/mlx_embed_server.py --model mlx-community/nomic-embed-text-v2-moe --port 8787 --preload
- *
- * Env:
- *   QMD_MLX_EMBED_URL  — server URL (default http://127.0.0.1:8787)
+ * Python server entrypoint:
+ *   python scripts/mlx_embed_server.py --model mlx-community/nomic-embed-text-v1.5 --port 8787 --preload
  */
 
 import type { EmbeddingResult, EmbedOptions } from "./llm.js";
+import type { EmbeddingDescriptor } from "./embedding/contract.js";
+import { decodeBinaryEmbeddings, validateJsonEmbedResponse } from "./embedding/protocol.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface MlxEmbedConfig {
   url?: string;
   timeoutMs?: number;
-  /** Use binary wire format by default (default: true for batches > 16) */
+  /** Use binary wire format by default (default: true for batches >= 16) */
   binary?: boolean;
   /** Max concurrent in-flight requests (default: 2) */
   concurrency?: number;
@@ -32,6 +32,7 @@ export interface MlxHealth {
   model?: string;
   dims?: number;
   ready: boolean;
+  descriptor?: EmbeddingDescriptor;
 }
 
 export interface MlxMemory {
@@ -51,7 +52,7 @@ export interface MlxStats {
 
 const DEFAULT_URL = process.env.QMD_MLX_EMBED_URL || "http://127.0.0.1:8787";
 const DEFAULT_TIMEOUT_MS = 60_000; // 60s for large batch processing
-const BINARY_THRESHOLD = 16;       // switch to binary protocol above this batch size
+const BINARY_THRESHOLD = 16;       // switch to binary protocol above or equal to this batch size
 
 function url(config?: MlxEmbedConfig): string {
   return (config?.url ?? DEFAULT_URL).replace(/\/$/, "");
@@ -61,44 +62,64 @@ function timeoutMs(config?: MlxEmbedConfig): number {
   return config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 }
 
-// ── Shared fetch ────────────────────────────────────────────────────────────
+// ── Shared fetch with full-body deadline ───────────────────────────────────
 
-function _fetch(url: string, opts: { method: string; body?: BodyInit; timeoutMs: number }): Promise<Response> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), opts.timeoutMs);
-  return fetch(url, {
-    method: opts.method,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Connection": "keep-alive",
-    },
-    body: opts.body,
-    signal: ctrl.signal,
-  }).finally(() => clearTimeout(t));
-}
+async function _fetchJson(
+  endpointUrl: string,
+  payload: Record<string, unknown>,
+  timeout: number,
+): Promise<{ ok: boolean; status: number; data?: any; error?: string }> {
+  try {
+    const resp = await fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Connection": "keep-alive",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeout),
+    });
 
-function _jsonBody(texts: string[], dims?: number, isQuery?: boolean): string {
-  const payload: Record<string, unknown> = { texts };
-  if (dims) payload.dims = dims;
-  if (isQuery) payload.is_query = isQuery;
-  return JSON.stringify(payload);
-}
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      return { ok: false, status: resp.status, error: `HTTP ${resp.status}: ${errText}` };
+    }
 
-// ── Binary decoder (zero-copy TypedArray) ───────────────────────────────────
-
-function _decodeBinary(buffer: ArrayBuffer): number[][] {
-  const header = new Int32Array(buffer, 0, 2);
-  const count = header[0]!;
-  const dims  = header[1]!;
-  if (count === 0 || dims === 0) return [];
-
-  const floats = new Float32Array(buffer, 8); // skip 8-byte header
-  const result: number[][] = [];
-  for (let i = 0; i < count; i++) {
-    // Float32Array.subarray() creates a view — zero copy
-    result.push(Array.from(floats.subarray(i * dims, (i + 1) * dims)));
+    const data = await resp.json();
+    return { ok: true, status: resp.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
   }
-  return result;
+}
+
+async function _fetchBinary(
+  endpointUrl: string,
+  payload: Record<string, unknown>,
+  timeout: number,
+): Promise<{ ok: boolean; status: number; buffer?: ArrayBuffer; error?: string }> {
+  try {
+    const resp = await fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Connection": "keep-alive",
+        "Accept": "application/octet-stream",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeout),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      return { ok: false, status: resp.status, error: `HTTP ${resp.status}: ${errText}` };
+    }
+
+    const buffer = await resp.arrayBuffer();
+    return { ok: true, status: resp.status, buffer };
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -125,29 +146,45 @@ export async function embedBatchWithMlx(
 
   const useBinary = config?.binary ?? (texts.length >= BINARY_THRESHOLD);
   const baseUrl = url(config);
-  const endpoint = useBinary ? "/embed-bin" : "/embed";
+  const timeout = timeoutMs(config);
+  const payload: Record<string, unknown> = { texts };
+  if (opts?.dims) payload.dims = opts.dims;
+  if (opts?.isQuery) payload.is_query = opts.isQuery;
 
   try {
-    const resp = await _fetch(`${baseUrl}${endpoint}`, {
-      method: "POST",
-      body: _jsonBody(texts, opts?.dims, opts?.isQuery),
-      timeoutMs: timeoutMs(config),
-    });
+    if (useBinary) {
+      const res = await _fetchBinary(`${baseUrl}/embed-bin`, payload, timeout);
+      if (!res.ok || !res.buffer) {
+        console.error(`MLX binary embed failed: ${res.error}`);
+        return texts.map(() => null);
+      }
+      const decoded = decodeBinaryEmbeddings(res.buffer);
+      if (decoded.count !== texts.length) {
+        console.error(`MLX returned ${decoded.count} embeddings, expected ${texts.length}`);
+        return texts.map(() => null);
+      }
+      return decoded.vectors.map((embedding) => ({
+        embedding,
+        model: opts?.model || "mlx",
+      }));
+    }
 
-    if (!resp.ok) {
-      const errBody = await resp.text().catch(() => null);
-      console.error(`MLX server ${resp.status}: ${errBody ?? ""}`);
+    const res = await _fetchJson(`${baseUrl}/embed`, payload, timeout);
+    if (!res.ok || !res.data) {
+      console.error(`MLX embed failed: ${res.error}`);
       return texts.map(() => null);
     }
 
-    if (useBinary) {
-      const buf = await resp.arrayBuffer();
-      const vecs = _decodeBinary(buf);
-      return vecs.map((embedding) => ({ embedding, model: "mlx" }));
+    const validated = validateJsonEmbedResponse(res.data);
+    if (validated.embeddings.length !== texts.length) {
+      console.error(`MLX returned ${validated.embeddings.length} embeddings, expected ${texts.length}`);
+      return texts.map(() => null);
     }
 
-    const data = await resp.json() as { embeddings: number[][]; model: string };
-    return data.embeddings.map((embedding) => ({ embedding, model: data.model }));
+    return validated.embeddings.map((embedding) => ({
+      embedding,
+      model: validated.model,
+    }));
   } catch (err) {
     console.error("MLX embedding failed:", err);
     return texts.map(() => null);
@@ -166,8 +203,9 @@ export async function embedBatchConcurrent(
   batchSize: number = 32,
 ): Promise<(EmbeddingResult | null)[]> {
   if (texts.length === 0) return [];
+  if (batchSize <= 0) batchSize = 32;
 
-  const concurrency = config?.concurrency ?? 2;
+  const concurrency = Math.max(1, config?.concurrency ?? 2);
 
   // Split into sub-batches
   const batches: string[][] = [];
@@ -176,7 +214,7 @@ export async function embedBatchConcurrent(
   }
 
   // Pipeline: maintain concurrency limit
-  const results: (EmbeddingResult[] | null)[] = new Array(batches.length);
+  const results: (EmbeddingResult | null)[][] = new Array(batches.length);
   let nextIdx = 0;
 
   async function worker(): Promise<void> {
@@ -184,22 +222,25 @@ export async function embedBatchConcurrent(
       const idx = nextIdx++;
       const batch = batches[idx]!;
       const res = await embedBatchWithMlx(batch, config, opts);
-      results[idx] = res.every((r) => r === null) ? null : (res as EmbeddingResult[]);
+      results[idx] = res;
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
+  const workerCount = Math.min(concurrency, batches.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  // Flatten in order
+  // Flatten in exact order
   const flat: (EmbeddingResult | null)[] = [];
-  for (const batch of results) {
-    if (batch === null) {
-      // Entire batch failed — fill with nulls
-      flat.push(...Array(batchSize).fill(null));
+  for (let b = 0; b < results.length; b++) {
+    const batchRes = results[b];
+    const expectedLength = batches[b]!.length;
+    if (!batchRes || batchRes.length !== expectedLength) {
+      flat.push(...Array(expectedLength).fill(null));
     } else {
-      flat.push(...batch);
+      flat.push(...batchRes);
     }
   }
+
   return flat.slice(0, texts.length);
 }
 
@@ -208,18 +249,18 @@ export async function embedBatchBinaryWithMlx(
   config?: MlxEmbedConfig,
   opts?: EmbedOptions & { dims?: number },
 ): Promise<number[][] | null> {
-  return embedBatchWithMlx(texts, { ...config, binary: true }, opts).then((r) =>
-    r.every((x) => x === null) ? null : r.map((x) => x!.embedding),
-  );
+  const r = await embedBatchWithMlx(texts, { ...config, binary: true }, opts);
+  if (r.length === 0 || r.some((x) => x === null)) return null;
+  return r.map((x) => x!.embedding);
 }
 
 export async function mlxHealth(config?: MlxEmbedConfig): Promise<MlxHealth | null> {
   try {
     const resp = await fetch(`${url(config)}/health`, {
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(3_000),
       headers: { "Connection": "keep-alive" },
     });
-    return resp.ok ? (await resp.json()) as MlxHealth : null;
+    return resp.ok ? ((await resp.json()) as MlxHealth) : null;
   } catch {
     return null;
   }
@@ -228,10 +269,10 @@ export async function mlxHealth(config?: MlxEmbedConfig): Promise<MlxHealth | nu
 export async function mlxMemory(config?: MlxEmbedConfig): Promise<MlxMemory | null> {
   try {
     const resp = await fetch(`${url(config)}/memory`, {
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(3_000),
       headers: { "Connection": "keep-alive" },
     });
-    return resp.ok ? (await resp.json()) as MlxMemory : null;
+    return resp.ok ? ((await resp.json()) as MlxMemory) : null;
   } catch {
     return null;
   }
@@ -240,10 +281,10 @@ export async function mlxMemory(config?: MlxEmbedConfig): Promise<MlxMemory | nu
 export async function mlxStats(config?: MlxEmbedConfig): Promise<MlxStats | null> {
   try {
     const resp = await fetch(`${url(config)}/stats`, {
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(3_000),
       headers: { "Connection": "keep-alive" },
     });
-    return resp.ok ? (await resp.json()) as MlxStats : null;
+    return resp.ok ? ((await resp.json()) as MlxStats) : null;
   } catch {
     return null;
   }
@@ -254,6 +295,23 @@ export async function isMlxAvailable(config?: MlxEmbedConfig): Promise<boolean> 
   return h?.ready ?? false;
 }
 
+export async function getMlxDescriptor(config?: MlxEmbedConfig): Promise<EmbeddingDescriptor | null> {
+  try {
+    const resp = await fetch(`${url(config)}/descriptor`, {
+      signal: AbortSignal.timeout(3_000),
+      headers: { "Connection": "keep-alive" },
+    });
+    if (resp.ok) {
+      return (await resp.json()) as EmbeddingDescriptor;
+    }
+  } catch {
+    // Fall back to health if /descriptor not supported
+  }
+  const h = await mlxHealth(config);
+  if (h?.descriptor) return h.descriptor;
+  return null;
+}
+
 // ── Class Wrapper ───────────────────────────────────────────────────────────
 
 export class MlxEmbedClient {
@@ -262,6 +320,7 @@ export class MlxEmbedClient {
   private _concurrency: number;
   public dims: number | null = null;
   public modelName: string | null = null;
+  public descriptor: EmbeddingDescriptor | null = null;
 
   constructor(config?: MlxEmbedConfig) {
     this._url = url(config);
@@ -275,6 +334,13 @@ export class MlxEmbedClient {
 
   async probeDims(): Promise<number> {
     if (this.dims != null) return this.dims;
+    const desc = await getMlxDescriptor(this.config());
+    if (desc) {
+      this.descriptor = desc;
+      this.dims = desc.outputDimensions;
+      this.modelName = desc.model;
+      return this.dims;
+    }
     const h = await mlxHealth(this.config());
     if (h?.dims) {
       this.dims = h.dims;
@@ -287,7 +353,18 @@ export class MlxEmbedClient {
       this.modelName = r[0].model;
       return this.dims;
     }
-    throw new Error("Could not probe MLX dimensions");
+    throw new Error("Could not probe MLX dimensions: server unreachable or returned empty embedding");
+  }
+
+  async getDescriptor(): Promise<EmbeddingDescriptor | null> {
+    if (this.descriptor) return this.descriptor;
+    const desc = await getMlxDescriptor(this.config());
+    if (desc) {
+      this.descriptor = desc;
+      this.dims = desc.outputDimensions;
+      this.modelName = desc.model;
+    }
+    return desc;
   }
 
   async embed(text: string, options?: EmbedOptions & { dims?: number }): Promise<EmbeddingResult | null> {
@@ -298,7 +375,11 @@ export class MlxEmbedClient {
     return embedBatchWithMlx(texts, this.config(), options);
   }
 
-  async embedBatchConcurrent(texts: string[], options?: EmbedOptions & { dims?: number }, batchSize?: number): Promise<(EmbeddingResult | null)[]> {
+  async embedBatchConcurrent(
+    texts: string[],
+    options?: EmbedOptions & { dims?: number },
+    batchSize?: number,
+  ): Promise<(EmbeddingResult | null)[]> {
     return embedBatchConcurrent(texts, this.config(), options, batchSize);
   }
 

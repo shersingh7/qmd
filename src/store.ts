@@ -26,6 +26,7 @@ import {
   withLLMSessionForLlm,
   type RerankDocument,
   type ILLMSession,
+  type EmbeddingResult,
 } from "./llm.js";
 import type {
   NamedCollection,
@@ -33,6 +34,10 @@ import type {
   CollectionConfig,
   ContextMap,
 } from "./collections.js";
+import {
+  type EmbeddingDescriptor,
+  computeEmbeddingSpaceId,
+} from "./embedding/contract.js";
 
 // =============================================================================
 // Configuration
@@ -1047,17 +1052,49 @@ export function isSqliteVecAvailable(): boolean {
   return _sqliteVecAvailable === true;
 }
 
-function ensureVecTableInternal(db: Database, dimensions: number): void {
+function ensureVecTableInternal(db: Database, dimensions: number, descriptor?: EmbeddingDescriptor): void {
   if (!_sqliteVecAvailable) {
     throw new Error("sqlite-vec is not available. Vector operations require a SQLite build with extension loading support.");
   }
+
+  // Verify embedding space identity against stored metadata
+  if (descriptor) {
+    const spaceId = computeEmbeddingSpaceId(descriptor);
+    try {
+      const storedSpace = db.prepare(`SELECT value FROM store_config WHERE key = 'embedding_space_id'`).get() as { value: string } | undefined;
+      const storedModel = db.prepare(`SELECT value FROM store_config WHERE key = 'embedding_model'`).get() as { value: string } | undefined;
+
+      if (storedSpace && storedSpace.value !== spaceId) {
+        throw new Error(
+          `Embedding space mismatch: existing vector index uses space '${storedSpace.value}' (${storedModel?.value || 'unknown'}), ` +
+          `but current configuration is space '${spaceId}' (${descriptor.model}). ` +
+          `Run 'qmd embed -f' to re-embed with the new model.`
+        );
+      }
+    } catch (err: any) {
+      if (err?.message?.includes("Embedding space mismatch")) throw err;
+      // store_config table might not exist yet during initial setup
+    }
+  }
+
   const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
   if (tableInfo) {
     const match = tableInfo.sql.match(/float\[(\d+)\]/);
     const hasHashSeq = tableInfo.sql.includes('hash_seq');
     const hasCosine = tableInfo.sql.includes('distance_metric=cosine');
     const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
-    if (existingDims === dimensions && hasHashSeq && hasCosine) return;
+
+    if (existingDims === dimensions && hasHashSeq && hasCosine) {
+      if (descriptor) {
+        const spaceId = computeEmbeddingSpaceId(descriptor);
+        try {
+          db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_space_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(spaceId);
+          db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(descriptor.model);
+          db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_descriptor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(descriptor));
+        } catch {}
+      }
+      return;
+    }
     if (existingDims !== null && existingDims !== dimensions) {
       throw new Error(
         `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
@@ -1067,6 +1104,15 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
     db.exec("DROP TABLE IF EXISTS vectors_vec");
   }
   db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+
+  if (descriptor) {
+    const spaceId = computeEmbeddingSpaceId(descriptor);
+    try {
+      db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_space_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(spaceId);
+      db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(descriptor.model);
+      db.prepare(`INSERT INTO store_config (key, value) VALUES ('embedding_descriptor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(descriptor));
+    } catch {}
+  }
 }
 
 // =============================================================================
@@ -1079,7 +1125,7 @@ export type Store = {
   /** Optional LlamaCpp instance for this store (overrides the global singleton) */
   llm?: LlamaCpp;
   close: () => void;
-  ensureVecTable: (dimensions: number) => void;
+  ensureVecTable: (dimensions: number, descriptor?: EmbeddingDescriptor) => void;
 
   // Index health
   getHashesNeedingEmbedding: () => number;
@@ -1431,6 +1477,13 @@ export async function generateEmbeddings(
     const BATCH_SIZE = 32;
     const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
 
+    let descriptor: EmbeddingDescriptor | undefined;
+    if (typeof session.getDescriptor === "function") {
+      try {
+        descriptor = await session.getDescriptor();
+      } catch {}
+    }
+
     for (const batchMeta of batches) {
       // Abort early if session has been invalidated
       if (!session.isValid) {
@@ -1476,14 +1529,19 @@ export async function generateEmbeddings(
       }
 
       if (!vectorTableInitialized) {
-        const firstChunk = batchChunks[0]!;
-        const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
-        const firstResult = await session.embed(firstText, { model });
-        if (!firstResult) {
-          throw new Error("Failed to get embedding dimensions from first chunk");
+        if (descriptor) {
+          store.ensureVecTable(descriptor.outputDimensions, descriptor);
+          vectorTableInitialized = true;
+        } else {
+          const firstChunk = batchChunks[0]!;
+          const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
+          const firstResult = await session.embed(firstText, { model });
+          if (!firstResult) {
+            throw new Error("Failed to get embedding dimensions from first chunk");
+          }
+          store.ensureVecTable(firstResult.embedding.length);
+          vectorTableInitialized = true;
         }
-        store.ensureVecTable(firstResult.embedding.length);
-        vectorTableInitialized = true;
       }
 
       const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
@@ -1513,16 +1571,24 @@ export async function generateEmbeddings(
 
         try {
           const embeddings = await session.embedBatch(texts, { model });
-          for (let i = 0; i < chunkBatch.length; i++) {
-            const chunk = chunkBatch[i]!;
-            const embedding = embeddings[i];
-            if (embedding) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
-              chunksEmbedded++;
-            } else {
-              errors++;
+
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            for (let i = 0; i < chunkBatch.length; i++) {
+              const chunk = chunkBatch[i]!;
+              const embedding = embeddings[i];
+              if (embedding) {
+                insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
+                chunksEmbedded++;
+              } else {
+                errors++;
+              }
+              batchChunkBytesProcessed += chunk.bytes;
             }
-            batchChunkBytesProcessed += chunk.bytes;
+            db.exec("COMMIT");
+          } catch (txErr) {
+            try { db.exec("ROLLBACK"); } catch {}
+            throw txErr;
           }
         } catch {
           // Batch failed — try individual embeddings as fallback
@@ -1592,7 +1658,7 @@ export function createStore(dbPath?: string): Store {
     db,
     dbPath: resolvedPath,
     close: () => db.close(),
-    ensureVecTable: (dimensions: number) => ensureVecTableInternal(db, dimensions),
+    ensureVecTable: (dimensions: number, descriptor?: EmbeddingDescriptor) => ensureVecTableInternal(db, dimensions, descriptor),
 
     // Index health
     getHashesNeedingEmbedding: () => getHashesNeedingEmbedding(db),
@@ -3011,74 +3077,89 @@ export async function searchVec(db: Database, query: string, model: string, limi
   // "optimize" this by combining into a single query with JOINs - it will break.
   // See: https://github.com/tobi/qmd/pull/23
 
-  // Step 1: Get vector matches from sqlite-vec (no JOINs allowed)
-  const vecResults = db.prepare(`
-    SELECT hash_seq, distance
-    FROM vectors_vec
-    WHERE embedding MATCH ? AND k = ?
-  `).all(new Float32Array(embedding), limit * 3) as { hash_seq: string; distance: number }[];
+  // Progressive overfetch: When filtering by collection, global KNN can miss matches if other
+  // collections occupy the top-k positions. We expand fetchK progressively up to a safe budget.
+  let fetchK = collectionName ? Math.max(limit * 4, 32) : limit * 3;
+  const maxCandidateBudget = Math.min(limit * 32, 2048);
+  const seen = new Map<string, { row: any; bestDist: number }>();
 
-  if (vecResults.length === 0) return [];
+  while (true) {
+    const vecResults = db.prepare(`
+      SELECT hash_seq, distance
+      FROM vectors_vec
+      WHERE embedding MATCH ? AND k = ?
+    `).all(new Float32Array(embedding), fetchK) as { hash_seq: string; distance: number }[];
 
-  // Step 2: Get chunk info and document data
-  const hashSeqs = vecResults.map(r => r.hash_seq);
-  const distanceMap = new Map(vecResults.map(r => [r.hash_seq, r.distance]));
+    if (vecResults.length === 0) break;
 
-  // Build query for document lookup
-  const placeholders = hashSeqs.map(() => '?').join(',');
-  let docSql = `
-    SELECT
-      cv.hash || '_' || cv.seq as hash_seq,
-      cv.hash,
-      cv.pos,
-      'qmd://' || d.collection || '/' || d.path as filepath,
-      d.collection || '/' || d.path as display_path,
-      d.title,
-      content.doc as body
-    FROM content_vectors cv
-    JOIN documents d ON d.hash = cv.hash AND d.active = 1
-    JOIN content ON content.hash = d.hash
-    WHERE cv.hash || '_' || cv.seq IN (${placeholders})
-  `;
-  const params: string[] = [...hashSeqs];
+    const hashSeqs = vecResults.map(r => r.hash_seq);
+    const distanceMap = new Map(vecResults.map(r => [r.hash_seq, r.distance]));
 
-  if (collectionName) {
-    docSql += ` AND d.collection = ?`;
-    params.push(collectionName);
-  }
+    const placeholders = hashSeqs.map(() => '?').join(',');
+    let docSql = `
+      SELECT
+        cv.hash || '_' || cv.seq as hash_seq,
+        cv.hash,
+        cv.pos,
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body
+      FROM content_vectors cv
+      JOIN documents d ON d.hash = cv.hash AND d.active = 1
+      JOIN content ON content.hash = d.hash
+      WHERE cv.hash || '_' || cv.seq IN (${placeholders})
+    `;
+    const params: string[] = [...hashSeqs];
 
-  const docRows = db.prepare(docSql).all(...params) as {
-    hash_seq: string; hash: string; pos: number; filepath: string;
-    display_path: string; title: string; body: string;
-  }[];
-
-  // Combine with distances and dedupe by filepath
-  const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
-  for (const row of docRows) {
-    const distance = distanceMap.get(row.hash_seq) ?? 1;
-    const existing = seen.get(row.filepath);
-    if (!existing || distance < existing.bestDist) {
-      seen.set(row.filepath, { row, bestDist: distance });
+    if (collectionName) {
+      docSql += ` AND d.collection = ?`;
+      params.push(collectionName);
     }
+
+    const docRows = db.prepare(docSql).all(...params) as {
+      hash_seq: string; hash: string; pos: number; filepath: string;
+      display_path: string; title: string; body: string;
+    }[];
+
+    for (const row of docRows) {
+      const distance = distanceMap.get(row.hash_seq) ?? 1;
+      const existing = seen.get(row.filepath);
+      if (!existing || distance < existing.bestDist) {
+        seen.set(row.filepath, { row, bestDist: distance });
+      }
+    }
+
+    // Stop if:
+    // 1. Not filtering by collection (single pass is sufficient)
+    // 2. We have found at least `limit` unique document results
+    // 3. We've reached the maximum candidate budget cap
+    // 4. The vector table has fewer results than our requested fetchK
+    if (!collectionName || seen.size >= limit || fetchK >= maxCandidateBudget || vecResults.length < fetchK) {
+      break;
+    }
+
+    fetchK = Math.min(fetchK * 4, maxCandidateBudget);
   }
 
   return Array.from(seen.values())
     .sort((a, b) => a.bestDist - b.bestDist)
     .slice(0, limit)
     .map(({ row, bestDist }) => {
-      const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+      const collection = row.filepath.split('//')[1]?.split('/')[0] || "";
+      const score = Math.max(0, 1 - bestDist / 2);
       return {
         filepath: row.filepath,
         displayPath: row.display_path,
         title: row.title,
         hash: row.hash,
         docid: getDocid(row.hash),
-        collectionName,
+        collectionName: collection,
         modifiedAt: "",  // Not available in vec query
         bodyLength: row.body.length,
         body: row.body,
         context: getContextForFile(db, row.filepath),
-        score: 1 - bestDist,  // Cosine similarity = 1 - cosine distance
+        score,
         source: "vec" as const,
         chunkPos: row.pos,
       };

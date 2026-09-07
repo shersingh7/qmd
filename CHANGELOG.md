@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+- **Apple Silicon Search and Inference Overhaul**: High-performance, model-aware MLX embedding runtime on Apple Silicon.
+- **Model-Aware MLX Server & Runtime**: Dedicated GPU worker thread running MLX embedding models (`mlx-community/nomic-embed-text-v1.5`, `BAAI/bge-small-en-v1.5`, `Qwen/Qwen3-Embedding-0.6B`) with architectural hidden state extraction, mean/CLS/last-token pooling, and float32 L2 normalization.
+- **Explicit Embedding Contract (`EmbeddingDescriptor`)**: SHA-256 fingerprinting of embedding spaces (`backend`, `model`, `pooling`, `dimensions`, `normalization`) stored in SQLite `store_config` to prevent silent index corruption across disparate models.
+- **Zero-Copy Little-Endian Binary Wire Protocol**: High-throughput `/embed-bin` endpoint with 8-byte header (`[count: i32][dims: i32]`) and strict finite value / bounds validation.
+- **Token-Once Length Bucketing & RAM-Aware Micro-Batching**: Single-pass tokenization, length-sorted execution with exact order restoration, dynamic memory budgeting, and micro-batch shrink on allocation failures.
+- **Progressive Overfetch in `searchVec`**: Scoped collection retrieval without illegal virtual table KNN JOINs, avoiding false negative drops when global KNN is saturated by other collections.
+- **Metal Benchmark Suite**: `scripts/bench_mlx.py` generating reproducible JSON benchmarks with throughput, latency percentiles, and unified memory metrics.
+
+### Fixed
+- Fixed TS2304 `BodyInit` type compilation error in `src/mlx.ts`.
+- Fixed causal LM logits vs hidden states bug where `model(input_ids)` projected into 151k vocabulary dimension instead of embedding dimensions.
+- Fixed unvalidated fallback from MLX to GGUF that silently substituted embedding spaces; MLX backend selection is now fail-closed by default.
+- Fixed duplicate embedding of chunk 0 during dimension probing in `generateEmbeddings`.
+
 ## [2.1.0] - 2026-04-05
 
 Code files now chunk at function and class boundaries via tree-sitter,

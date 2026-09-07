@@ -119,7 +119,7 @@ qmd multi-get "#abc123, #def456"
 
 ```sh
 # Start MLX embedding server (Apple Silicon only)
-python scripts/mlx_embed_server.py --model <model> --dtype float16 --preload
+python scripts/mlx_embed_server.py --model mlx-community/nomic-embed-text-v1.5 --dtype float16 --preload --port 8787
 
 # Env vars: QMD_EMBED_BACKEND=mlx, QMD_MLX_EMBED_URL=http://127.0.0.1:8787
 ```
@@ -136,8 +136,8 @@ bun link               # Install globally as 'qmd'
 All tests live in `test/`. Run everything:
 
 ```sh
-npx vitest run --reporter=verbose test/
 bun test --preload ./src/test-preload.ts test/
+PYTHONPATH=. .venv/bin/pytest test/python/
 ```
 
 ## Architecture

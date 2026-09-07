@@ -1,15 +1,11 @@
-# QMD MLX Embedding Server
-# Usage: pip install -r scripts/mlx_server_requirements.txt
+# QMD MLX Embedding Server Requirements
+# Tested with Python 3.11 / 3.12 / 3.14 on macOS Apple Silicon
 
-# Core MLX and Hugging Face stack
 mlx>=0.22.0
 mlx-lm>=0.12.0
+mlx-embedding-models>=0.0.11
 transformers>=4.40.0
-torch>=2.2.0
 numpy>=1.26.0
-
-# Optional: sentence-transformers fallback for non-native MLX models
-sentence-transformers>=2.5.0
-
-# Optional: faster loading of safetensors
 safetensors>=0.4.0
+pytest>=8.0.0
+requests>=2.31.0

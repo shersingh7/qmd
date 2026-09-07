@@ -17,6 +17,18 @@ import {
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  type EmbeddingDescriptor,
+  computeEmbeddingSpaceId,
+  formatQueryForDescriptor,
+  formatDocForDescriptor,
+} from "./embedding/contract.js";
+import {
+  resolveEmbeddingConfig,
+  DEFAULT_GGUF_EMBED_MODEL,
+  DEFAULT_MLX_URL,
+} from "./embedding/config.js";
+import type { MlxEmbedClient } from "./mlx.js";
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -158,6 +170,7 @@ export interface ILLMSession {
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
   expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
+  getDescriptor?(): Promise<EmbeddingDescriptor>;
   /** Whether this session is still valid (not released or aborted) */
   readonly isValid: boolean;
   /** Abort signal for this session (aborts on release or maxDuration) */
@@ -186,8 +199,9 @@ export type RerankDocument = {
   title?: string;
 };
 
+
 // =============================================================================
-// Model Configuration
+// LLM Configuration
 // =============================================================================
 
 // HuggingFace model URIs for node-llama-cpp
@@ -464,17 +478,11 @@ export class LlamaCpp implements LLM {
   private mlxDtype: 'float32' | 'float16' | 'bfloat16';
   private mlxConcurrency: number;
   private mlxFallback: boolean;
-  private mlxClient: {
-    embed(text: string, options?: EmbedOptions & { dims?: number }): Promise<EmbeddingResult | null>;
-    embedBatch(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<(EmbeddingResult | null)[]>;
-    embedBatchConcurrent(texts: string[], options?: EmbedOptions & { dims?: number }, batchSize?: number): Promise<(EmbeddingResult | null)[]>;
-    embedBatchBinary(texts: string[], options?: EmbedOptions & { dims?: number }): Promise<number[][] | null>;
-    probeDims(): Promise<number>;
-    dims: number | null;
-    modelName: string | null;
-  } | null = null;
+  private failClosed: boolean;
+  private mlxClient: MlxEmbedClient | null = null;
   private mlxDims: number | null = null;
   private mlxName: string | null = null;
+  private mlxDescriptor: EmbeddingDescriptor | null = null;
   private mlxFailed = false;
   private mlxWarm = false;  // whether first request already warmed up
   private embedModelLoadPromise: Promise<LlamaModel> | null = null;
@@ -491,12 +499,20 @@ export class LlamaCpp implements LLM {
 
 
   constructor(config: LlamaCppConfig = {}) {
-    this.embedBackend = config.embedBackend ?? getEmbedBackend();
-    this.mlxUrlOverride = config.mlxUrl ?? null;
+    const resolved = resolveEmbeddingConfig({
+      backend: config.embedBackend,
+      model: config.embedModel,
+      mlxUrl: config.mlxUrl,
+      mlxConcurrency: config.mlxConcurrency,
+    });
+
+    this.embedBackend = resolved.backend;
+    this.mlxUrlOverride = resolved.mlxUrl;
     this.mlxDtype = config.mlxDtype ?? 'float32';
-    this.mlxConcurrency = config.mlxConcurrency ?? 2;
-    this.mlxFallback = config.mlxFallback ?? true;
-    this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
+    this.mlxConcurrency = resolved.mlxConcurrency;
+    this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
+    this.mlxFallback = config.mlxFallback ?? (!this.failClosed);
+    this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || (this.embedBackend === 'mlx' ? resolved.model : DEFAULT_EMBED_MODEL);
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
@@ -511,6 +527,23 @@ export class LlamaCpp implements LLM {
       return this.mlxName ?? this.embedModelUri;
     }
     return this.embedModelUri;
+  }
+
+  async getDescriptor(): Promise<EmbeddingDescriptor> {
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      await this._ensureMlxClient();
+      if (this.mlxDescriptor) return this.mlxDescriptor;
+    }
+    return {
+      version: 1,
+      backend: "gguf",
+      model: this.embedModelUri,
+      pooling: "mean",
+      nativeDimensions: 768,
+      outputDimensions: 768,
+      maxTokens: 2048,
+      normalized: true,
+    };
   }
 
   /**
@@ -906,6 +939,10 @@ export class LlamaCpp implements LLM {
    * Returns tokenizer tokens (opaque type from node-llama-cpp)
    */
   async tokenize(text: string): Promise<readonly LlamaToken[]> {
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      const words = text.match(/\p{L}+|\p{N}+|[^\s\p{L}\p{N}]/gu) || [];
+      return words.map((_, i) => i as unknown as LlamaToken);
+    }
     await this.ensureEmbedContext();  // Ensure model is loaded
     if (!this.embedModel) {
       throw new Error("Embed model not loaded");
@@ -917,6 +954,10 @@ export class LlamaCpp implements LLM {
    * Count tokens in text using the embedding model's tokenizer
    */
   async countTokens(text: string): Promise<number> {
+    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
+      const words = text.match(/\p{L}+|\p{N}+|[^\s\p{L}\p{N}]/gu);
+      return words ? words.length : 0;
+    }
     const tokens = await this.tokenize(text);
     return tokens.length;
   }
@@ -1077,31 +1118,47 @@ export class LlamaCpp implements LLM {
 
   /** Lazy-initialize MLX client on first use */
   private async _ensureMlxClient(): Promise<void> {
-    if (this.mlxClient) return;
+    if (this.mlxClient && this.mlxDescriptor) return;
     if (this.mlxFailed && this.mlxFallback) return;
 
-    const { MlxEmbedClient } = await import('./mlx.js');
-    this.mlxClient = new MlxEmbedClient({
+    const { MlxEmbedClient, getMlxDescriptor } = await import('./mlx.js');
+    const client = new MlxEmbedClient({
       url: this.mlxUrlOverride ?? undefined,
       concurrency: this.mlxConcurrency,
     });
 
     // Probe dims once so downstream can know the vector size
     try {
-      await this.mlxClient.probeDims();
-      this.mlxDims = this.mlxClient.dims;
-      this.mlxName = this.mlxClient.modelName;
+      await client.probeDims();
+      this.mlxDims = client.dims;
+      this.mlxName = client.modelName;
+      const remoteDesc = await getMlxDescriptor(client.config());
+      this.mlxDescriptor = remoteDesc || client.descriptor || {
+        version: 1,
+        backend: "mlx",
+        model: this.mlxName || "mlx",
+        pooling: "mean",
+        nativeDimensions: this.mlxDims || 768,
+        outputDimensions: this.mlxDims || 768,
+        maxTokens: 2048,
+        normalized: true,
+      };
+      this.mlxClient = client;
       this.mlxFailed = false;
       this.mlxWarm = true;
     } catch (err) {
-      if (this.mlxFallback) {
+      if (this.mlxFallback && !this.failClosed) {
         console.warn(`MLX server unreachable at ${this.mlxUrlOverride ?? process.env.QMD_MLX_EMBED_URL ?? 'http://127.0.0.1:8787'}, falling back to GGUF.`);
         this.mlxFailed = true;
         this.mlxClient = null;
         this.mlxDims = null;
         this.mlxName = null;
+        this.mlxDescriptor = null;
       } else {
-        throw err;
+        throw new Error(
+          `MLX embedding server unreachable at ${this.mlxUrlOverride ?? process.env.QMD_MLX_EMBED_URL ?? 'http://127.0.0.1:8787'}. ` +
+          `Start server with 'python scripts/mlx_embed_server.py --preload' or configure QMD_EMBED_BACKEND=gguf. (${err instanceof Error ? err.message : String(err)})`
+        );
       }
     }
   }
@@ -1641,6 +1698,10 @@ class LLMSession implements ILLMSession {
     options?: RerankOptions
   ): Promise<RerankResult> {
     return this.withOperation(() => this.manager.getLlamaCpp().rerank(query, documents, options));
+  }
+
+  async getDescriptor(): Promise<EmbeddingDescriptor> {
+    return this.withOperation(() => this.manager.getLlamaCpp().getDescriptor());
   }
 }
 

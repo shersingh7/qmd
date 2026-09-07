@@ -12,83 +12,86 @@ You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
 ## MLX-Native Embeddings (Apple Silicon)
 
-On M-series Macs, QMD can use **native MLX embedding** — a dedicated Python HTTP server that runs embedding models directly on the GPU via Apple's MLX framework. This is 2-5× faster than GGUF embeddings and uses Metal GPU acceleration natively.
+On Apple Silicon (M-series MacBooks/Macs), QMD supports **native MLX embeddings** via a dedicated Python server powered by Apple's MLX framework. The MLX runtime runs models directly on the unified memory GPU with a single-flight execution owner, model-aware pooling, token-once batching, and zero-copy binary transport.
 
-### Why MLX over GGUF?
+### Architectural Highlights
 
-| | GGUF (node-llama-cpp) | MLX-Native |
+| Feature | GGUF (node-llama-cpp) | MLX-Native (`scripts/mlx_embed_server.py`) |
 |---|---|---|
-| **GPU** | Indirect (Metal via llama.cpp) | Direct (MLX → Metal Compute) |
-| **JIT compilation** | No | `@mx.compile` fused kernel graphs |
-| **Batch throughput** | ~1× | 2-5× |
-| **Memory** | CPU + GPU copies | Unified memory, zero-copy |
-| **Precision** | Quantized only (Q8/Q4) | float16 or float32 |
-| **Wire format** | JSON float arrays | Binary Float32 (zero-copy) |
+| **GPU Execution** | Metal via llama.cpp | Direct MLX Metal Compute (Dedicated Worker Thread) |
+| **Model Families** | GGUF quantized models | HuggingFace MLX models (`nomic-embed-text`, `bge-small`, `qwen3-embed`) |
+| **Hidden State Extraction** | Native embedding GGUFs | Architectural hidden state extraction (Encoder BERT / Causal LM backbone) |
+| **Pooling & Norm** | Model-specific GGUF | Universal Mean / CLS / Last-token pooling + float32 L2 normalization |
+| **Wire Protocol** | In-process native bindings | Bounded HTTP + Little-endian Binary Float32 (`/embed-bin`) |
+| **Safety & Contracts** | GGUF model path checks | SHA-256 `EmbeddingDescriptor` space identity (fail-closed backend selection) |
 
 ### Quick Start (MLX Mode)
 
 ```bash
-# 1. Install Python deps
+# 1. Install Python dependencies in a repo-local virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r scripts/mlx_server_requirements.txt
 
 # 2. Start the MLX embedding server
 python scripts/mlx_embed_server.py \
-  --model mlx-community/nomic-embed-text-v2-moe \
+  --model mlx-community/nomic-embed-text-v1.5 \
   --dtype float16 \
   --preload \
   --port 8787
 
-# 3. Set backend to MLX
+# 3. Configure QMD to use MLX backend
 export QMD_EMBED_BACKEND=mlx
 export QMD_MLX_EMBED_URL=http://127.0.0.1:8787
 
-# 4. Use QMD as normal — embeddings now use MLX
+# 4. Use QMD as normal — embeddings use MLX Metal acceleration
 qmd embed
-qmd query "your search query"
+qmd query "search query"
 ```
 
-The MLX server provides these endpoints:
+The MLX server exposes standard REST and binary endpoints:
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/embed` | POST | JSON embedding (one or batch) |
-| `/embed-bin` | POST | Binary Float32 embedding (zero-copy, fast) |
-| `/health` | GET | Liveness check |
-| `/ready` | GET | Server ready (model loaded) |
-| `/memory` | GET | GPU memory usage |
-| `/stats` | GET | Throughput stats, JIT compiled shapes |
+| `/embed` | POST | JSON embedding request (array of texts) |
+| `/embed-bin` | POST | High-throughput binary Float32 transport (`[count: i32][dims: i32][floats]`) |
+| `/tokenize` | POST | Token count validation and single-pass length profiling |
+| `/descriptor` | GET | Model descriptor fingerprint (model, pooling, dims, max_tokens) |
+| `/health` | GET | Process liveness check |
+| `/ready` | GET | Readiness check (returns 200 once model is loaded and warm, 503 during load) |
+| `/memory` | GET | Active and peak Metal unified memory usage |
+| `/stats` | GET | Total requests, average latency, and uptime |
 
 ### MLX Server Flags
 
 ```
---model PATH         HuggingFace model ID or local path (required)
---port 8787          Listen port
---host 127.0.0.1     Bind address
---dtype float16      Precision: float32 or float16 (half memory, faster matmul on AMX)
---quantization N     MLX quantization bits (4 or 8)
---preload            Warm GPU at startup (pre-compiles Metal shaders)
+--model PATH             HuggingFace repo ID or local path (e.g. mlx-community/nomic-embed-text-v1.5)
+--port 8787              Server port (default: 8787)
+--host 127.0.0.1         Bind address (default: 127.0.0.1 loopback)
+--dtype float16          Precision: float32, float16, or bfloat16 (default: float16)
+--max-batch-tokens N     Max padded tokens per micro-batch (auto-scaled to RAM by default)
+--preload                Preload and validate model weights at startup before serving
 ```
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `QMD_EMBED_BACKEND` | `gguf` | `mlx` or `gguf` |
+| `QMD_EMBED_BACKEND` | `gguf` | Active embedding backend: `mlx` or `gguf` |
 | `QMD_MLX_EMBED_URL` | `http://127.0.0.1:8787` | MLX server URL |
-| `QMD_MLX_DTYPE` | `float32` | `float16` or `float32` |
-| `QMD_MLX_CONCURRENCY` | `2` | Parallel batch requests |
-| `QMD_MLX_FALLBACK` | `true` | Fall back to GGUF if MLX unreachable |
+| `QMD_MLX_CONCURRENCY` | `2` | Bounded concurrent in-flight batch requests |
+| `QMD_MLX_FALLBACK` | `false` | Fallback to GGUF (fail-closed by default to prevent space corruption) |
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
 
-### MLX Performance Internals
+### Metal Benchmark Performance (Apple M2 Pro 32GB)
 
-The Python server leverages three Apple Silicon-specific optimizations:
+Measured with `scripts/bench_mlx.py` using `mlx-community/nomic-embed-text-v1.5` (768d, float16):
 
-1. **`@mx.compile` JIT** — Wraps the forward pass + mean pooling + L2 normalization into a single fused Metal Compute graph. On first call, MLX traces the computation, compiles it to Metal shaders, and caches the graph. Same-shape batches reuse the compiled trace — no Python overhead, no intermediate allocations, no redundant kernel launches.
-
-2. **Zero-copy binary export** — Embeddings live in Apple unified memory (GPU and CPU share the same physical RAM). The `/embed-bin` endpoint creates a `numpy` array backed by the same memory (`copy=False`) and writes raw `Float32` bytes directly to the socket. No `.tolist()` Python float boxing, no `struct.pack` loops.
-
-3. **Concurrent pipelining** — The TypeScript client (`src/mlx.ts`) splits large batches (>64 texts) into sub-batches of 32 and fires `concurrency` requests in parallel. On M2 Pro/Max with ample GPU bandwidth, 2-3 parallel forward passes saturate the GPU pipeline without contention.
+- **Batch 1 (Single Query):** ~3.7 ms per text (269 texts/sec)
+- **Batch 8:** ~4.9 ms total (1,621 texts/sec)
+- **Batch 32 (Bulk Indexing):** ~10.7 ms total (2,989 texts/sec)
+- **Active Metal Memory:** ~86 MB resident footprint
+- **End-to-end Binary Wire Latency:** <0.2 ms decoding overhead for 32 × 768 Float32 vectors
 
 ---
 

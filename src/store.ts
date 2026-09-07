@@ -3239,9 +3239,35 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
+/**
+ * Resolve the effective model identity for llm_cache keys.
+ *
+ * When the instance will serve the op from the MLX daemon, the key uses the
+ * daemon's reported model (`mlx:<model>`); otherwise it uses the requested
+ * (GGUF) model string. This keeps MLX and GGUF results in separate cache
+ * namespaces so toggling the opt-in flags (or swapping daemon models) can
+ * never serve cross-backend scores. Tolerant of mock LLMs that lack
+ * `mlxModelFor` (test doubles) — those fall back to the requested model.
+ */
+async function predictedModelFor(llm: LlamaCpp, op: 'rerank' | 'expand', fallback: string): Promise<string> {
+  try {
+    const fn = (llm as unknown as { mlxModelFor?: (op: 'rerank' | 'expand') => Promise<string | null> }).mlxModelFor;
+    if (typeof fn === 'function') {
+      const m = await fn.call(llm, op);
+      if (m) return m;
+    }
+  } catch {
+    // Daemon probe failed — the call itself will take the GGUF fallback,
+    // so the GGUF key is the correct namespace.
+  }
+  return fallback;
+}
+
 export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<ExpandedQuery[]> {
+  const llm = llmOverride ?? getDefaultLlamaCpp();
+  const effectiveModel = await predictedModelFor(llm, 'expand', model);
   // Check cache first — stored as JSON preserving types
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
+  const cacheKey = getCacheKey("expandQuery", { query, model: effectiveModel, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
   if (cached) {
     try {
@@ -3257,7 +3283,6 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
-  const llm = llmOverride ?? getDefaultLlamaCpp();
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
   const results = await llm.expandQuery(query, { intent });
 
@@ -3282,6 +3307,11 @@ export async function rerank(query: string, documents: { file: string; text: str
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 
+  // Namespace the cache by serving backend: MLX scores and GGUF scores for
+  // the same chunk must never share a key (see predictedModelFor).
+  const llm = llmOverride ?? getDefaultLlamaCpp();
+  const effectiveModel = await predictedModelFor(llm, 'rerank', model);
+
   const cachedResults: Map<string, number> = new Map();
   const uncachedDocsByChunk: Map<string, RerankDocument> = new Map();
 
@@ -3291,8 +3321,8 @@ export async function rerank(query: string, documents: { file: string; text: str
   // File path is excluded from the new cache key because the reranker score
   // depends on the chunk content, not where it came from.
   for (const doc of documents) {
-    const cacheKey = getCacheKey("rerank", { query: rerankQuery, model, chunk: doc.text });
-    const legacyCacheKey = getCacheKey("rerank", { query, file: doc.file, model, chunk: doc.text });
+    const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: effectiveModel, chunk: doc.text });
+    const legacyCacheKey = getCacheKey("rerank", { query, file: doc.file, model: effectiveModel, chunk: doc.text });
     const cached = getCachedResult(db, cacheKey) ?? getCachedResult(db, legacyCacheKey);
     if (cached !== null) {
       cachedResults.set(doc.text, parseFloat(cached));
@@ -3303,7 +3333,6 @@ export async function rerank(query: string, documents: { file: string; text: str
 
   // Rerank uncached documents using LlamaCpp
   if (uncachedDocsByChunk.size > 0) {
-    const llm = llmOverride ?? getDefaultLlamaCpp();
     const uncachedDocs = [...uncachedDocsByChunk.values()];
     const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model });
 
@@ -3311,7 +3340,7 @@ export async function rerank(query: string, documents: { file: string; text: str
     const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
     for (const result of rerankResult.results) {
       const chunk = textByFile.get(result.file) || "";
-      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model, chunk });
+      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: effectiveModel, chunk });
       setCachedResult(db, cacheKey, result.score.toString());
       cachedResults.set(chunk, result.score);
     }

@@ -18,6 +18,9 @@
     "bin/",
     "dist/",
     "scripts/",
+    "!scripts/**/__pycache__/",
+    "!scripts/**/*.pyc",
+    "!scripts/**/*.pyo",
     "LICENSE",
     "CHANGELOG.md"
   ],

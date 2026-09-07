@@ -2564,6 +2564,110 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 });
 
 // =============================================================================
+// MLX backend cache namespacing
+// =============================================================================
+
+describe("MLX backend cache namespacing", () => {
+  test("rerank cache separates MLX and GGUF namespaces", async () => {
+    const store = await createTestStore();
+    const rerankSpy = vi.fn(async (_query: string, docs: { file: string; text: string }[]) => ({
+      results: docs.map((doc, index) => ({ file: doc.file, score: 0.9 - index * 0.1, index })),
+      model: "mock-reranker",
+    }));
+    // Mutable backend tag: starts as MLX, toggles to GGUF mid-test.
+    let mlxTag: string | null = "mlx:fake-reranker-v1";
+    const llmSpy = vi.spyOn(llmModule, "getDefaultLlamaCpp").mockReturnValue({
+      rerank: rerankSpy,
+      mlxModelFor: async (_op: string) => mlxTag,
+    } as any);
+
+    try {
+      const docs = [{ file: "doc1.md", text: "Some chunk text" }];
+
+      // MLX namespace: first call misses, second hits.
+      await store.rerank("query", docs);
+      await store.rerank("query", docs);
+      expect(rerankSpy).toHaveBeenCalledTimes(1);
+
+      // Toggle to GGUF namespace: must miss and re-invoke.
+      mlxTag = null;
+      const third = await store.rerank("query", docs);
+      expect(rerankSpy).toHaveBeenCalledTimes(2);
+      expect(third[0]?.score).toBeCloseTo(0.9);
+
+      // GGUF namespace now cached.
+      await store.rerank("query", docs);
+      expect(rerankSpy).toHaveBeenCalledTimes(2);
+
+      // Back to MLX namespace: still cached from before, no new call.
+      mlxTag = "mlx:fake-reranker-v1";
+      await store.rerank("query", docs);
+      expect(rerankSpy).toHaveBeenCalledTimes(2);
+
+      // New daemon model = new namespace: must miss again.
+      mlxTag = "mlx:fake-reranker-v2";
+      await store.rerank("query", docs);
+      expect(rerankSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      llmSpy.mockRestore();
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("expandQuery cache separates MLX and GGUF namespaces", async () => {
+    const store = await createTestStore();
+    const expandSpy = vi.fn(async (query: string) => [
+      { type: "vec" as const, text: `expanded ${query}` },
+    ]);
+    let mlxTag: string | null = "mlx:fake-generate-v1";
+    const llmSpy = vi.spyOn(llmModule, "getDefaultLlamaCpp").mockReturnValue({
+      expandQuery: expandSpy,
+      mlxModelFor: async (_op: string) => mlxTag,
+    } as any);
+
+    try {
+      await store.expandQuery("indexing", undefined);
+      await store.expandQuery("indexing", undefined);
+      expect(expandSpy).toHaveBeenCalledTimes(1);
+
+      mlxTag = null;
+      await store.expandQuery("indexing", undefined);
+      expect(expandSpy).toHaveBeenCalledTimes(2);
+
+      await store.expandQuery("indexing", undefined);
+      expect(expandSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      llmSpy.mockRestore();
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("mlxModelFor returns null without probing when MLX path is inactive", async () => {
+    const prevRerank = process.env.QMD_MLX_RERANK;
+    const prevExpand = process.env.QMD_MLX_EXPAND;
+    delete process.env.QMD_MLX_RERANK;
+    delete process.env.QMD_MLX_EXPAND;
+    try {
+      // No daemon is running in CI and none is needed: both branches must
+      // resolve null synchronously-without-probe (fast, no network).
+      const mlxBackend = new llmModule.LlamaCpp({ embedBackend: "mlx" });
+      const t0 = Date.now();
+      expect(await mlxBackend.mlxModelFor("rerank")).toBeNull();
+      expect(await mlxBackend.mlxModelFor("expand")).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(5000);
+
+      const ggufBackend = new llmModule.LlamaCpp({ embedBackend: "gguf" });
+      expect(await ggufBackend.mlxModelFor("rerank")).toBeNull();
+      await ggufBackend.dispose().catch(() => {});
+      await mlxBackend.dispose().catch(() => {});
+    } finally {
+      if (prevRerank !== undefined) process.env.QMD_MLX_RERANK = prevRerank;
+      if (prevExpand !== undefined) process.env.QMD_MLX_EXPAND = prevExpand;
+    }
+  });
+});
+
+// =============================================================================
 // Edge Cases & Error Handling
 // =============================================================================
 

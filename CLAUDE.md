@@ -118,10 +118,19 @@ qmd multi-get "#abc123, #def456"
 ## MLX Embedding Server
 
 ```sh
-# Start MLX embedding server (Apple Silicon only)
-python scripts/mlx_embed_server.py --model mlx-community/nomic-embed-text-v1.5 --dtype float16 --preload --port 8787
+# Start unified MLX daemon: embed + rerank + generate (Apple Silicon only)
+scripts/qmd-mlx-daemon.sh start    # launchd supervised (com.qmd.mlxd)
+scripts/qmd-mlx-daemon.sh status   # state + /ready probe
+
+# Or foreground:
+python scripts/mlx_embed_server.py --model mlx-community/Qwen3-Embedding-4B-4bit-DWQ \
+  --rerank-model ~/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit \
+  --generate-model mlx-community/Qwen3-1.7B-4bit --preload --port 8787
 
 # Env vars: QMD_EMBED_BACKEND=mlx, QMD_MLX_EMBED_URL=http://127.0.0.1:8787
+# Opt-in: QMD_MLX_RERANK=1, QMD_MLX_EXPAND=1 (GGUF is the default for both —
+# it ranks hard queries better as of the Sep 2026 eval; see
+# docs/benchmarks/all-mlx-results.md)
 ```
 
 ## Development

@@ -533,6 +533,42 @@ export class LlamaCpp implements LLM {
     return this.embedModelUri;
   }
 
+  /** True when this instance will route rerank calls through the MLX daemon. */
+  private mlxRerankEnabled(): boolean {
+    return this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_RERANK === '1';
+  }
+
+  /** True when this instance will route expansion calls through the MLX daemon. */
+  private mlxExpandEnabled(): boolean {
+    return this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_EXPAND === '1';
+  }
+
+  /**
+   * Predicted MLX model identity for cache-key purposes.
+   *
+   * Returns `mlx:<model>` when this instance will route `op` through the MLX
+   * daemon, else null (caller falls back to the requested model string).
+   * Uses the memoized daemon descriptor — no extra I/O beyond the single
+   * probe `_ensureMlxClient` already performs. Daemon-down or adapter-missing
+   * yields null, which matches the GGUF fallback the call itself will take.
+   */
+  async mlxModelFor(op: 'rerank' | 'expand'): Promise<string | null> {
+    if (op === 'rerank' ? !this.mlxRerankEnabled() : !this.mlxExpandEnabled()) return null;
+    try {
+      await this._ensureMlxClient();
+    } catch {
+      return null;
+    }
+    if (!this.mlxClient || !this.mlxDescriptor) return null;
+    const d = this.mlxDescriptor as EmbeddingDescriptor & {
+      rerank?: { model?: string };
+      generate?: { model?: string };
+    };
+    const sub = op === 'rerank' ? d.rerank?.model : d.generate?.model;
+    if (!sub) return null;
+    return `mlx:${sub}`;
+  }
+
   async getDescriptor(): Promise<EmbeddingDescriptor> {
     if (this.embedBackend === 'mlx' && !this.mlxFailed) {
       await this._ensureMlxClient();
@@ -1375,7 +1411,7 @@ export class LlamaCpp implements LLM {
     // tuned GGUF expansion model (Sep 7 2026). The GGUF model was fine-tuned
     // for this exact lex/vec/hyde grammar; the MLX path enforces the same
     // format by parsing only.
-    if (this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_EXPAND === '1') {
+    if (this.mlxExpandEnabled()) {
       const mlxQueries = await this._expandQueryMlx(query, options.includeLexical ?? true, options.intent);
       if (mlxQueries && mlxQueries.length > 0) return mlxQueries;
     }
@@ -1486,7 +1522,7 @@ export class LlamaCpp implements LLM {
     // Sep 7 2026). Flip the default only if a later build closes the gap.
     // Fail-closed: when enabled but unreachable, falls back to GGUF only if
     // QMD_MLX_RERANK_FALLBACK is not 0.
-    if (this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_RERANK === '1') {
+    if (this.mlxRerankEnabled()) {
       const mlxResult = await this._rerankMlx(query, documents);
       if (mlxResult) return mlxResult;
     }

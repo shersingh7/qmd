@@ -55,10 +55,12 @@ The MLX server exposes standard REST and binary endpoints:
 |---|---|---|
 | `/embed` | POST | JSON embedding request (array of texts) |
 | `/embed-bin` | POST | High-throughput binary Float32 transport (`[count: i32][dims: i32][floats]`) |
+| `/rerank` | POST | Rerank documents for a query (`{query, documents}` → `{scores}`) — requires `--rerank-model` |
+| `/generate` | POST | Query-expansion completions (`{prompt, max_tokens, temperature}` → `{text}`) — requires `--generate-model` |
 | `/tokenize` | POST | Token count validation and single-pass length profiling |
-| `/descriptor` | GET | Model descriptor fingerprint (model, pooling, dims, max_tokens) |
-| `/health` | GET | Process liveness check |
-| `/ready` | GET | Readiness check (returns 200 once model is loaded and warm, 503 during load) |
+| `/descriptor` | GET | Model descriptor fingerprint (model, pooling, dims, max_tokens + rerank/generate sub-descriptors) |
+| `/health` | GET | Process liveness check (includes rerank/generate model names) |
+| `/ready` | GET | Readiness check (returns 200 once ALL configured models are loaded and warm, 503 during load) |
 | `/memory` | GET | Active and peak Metal unified memory usage |
 | `/stats` | GET | Total requests, average latency, and uptime |
 
@@ -66,11 +68,22 @@ The MLX server exposes standard REST and binary endpoints:
 
 ```
 --model PATH             HuggingFace repo ID or local path (e.g. mlx-community/nomic-embed-text-v1.5)
+--rerank-model PATH      Reranker model; enables /rerank (e.g. local Qwen3-Reranker-4B MLX 4-bit)
+--generate-model PATH    Generation model; enables /generate (e.g. mlx-community/Qwen3-1.7B-4bit)
 --port 8787              Server port (default: 8787)
 --host 127.0.0.1         Bind address (default: 127.0.0.1 loopback)
 --dtype float16          Precision: float32, float16, or bfloat16 (default: float16)
 --max-batch-tokens N     Max padded tokens per micro-batch (auto-scaled to RAM by default)
 --preload                Preload and validate model weights at startup before serving
+```
+
+### Daemon supervision
+
+```sh
+scripts/qmd-mlx-daemon.sh status   # launchd state + /ready probe
+scripts/qmd-mlx-daemon.sh start    # install ~/Library/LaunchAgents/com.qmd.mlxd.plist + bootstrap
+scripts/qmd-mlx-daemon.sh stop     # bootout
+QMD_EMBED_BACKEND=mlx qmd status   # includes an MLX Daemon section (embed/rerank/generate models)
 ```
 
 ### Environment Variables
@@ -81,7 +94,15 @@ The MLX server exposes standard REST and binary endpoints:
 | `QMD_MLX_EMBED_URL` | `http://127.0.0.1:8787` | MLX server URL |
 | `QMD_MLX_CONCURRENCY` | `2` | Bounded concurrent in-flight batch requests |
 | `QMD_MLX_FALLBACK` | `false` | Fallback to GGUF (fail-closed by default to prevent space corruption) |
+| `QMD_MLX_RERANK` | unset (GGUF) | Set to `1` to route reranking through the MLX daemon (opt-in: GGUF ranks hard queries better — 80% vs 68–72% ground-truth accuracy, Sep 2026 eval) |
+| `QMD_MLX_EXPAND` | unset (GGUF) | Set to `1` to route query expansion through the MLX daemon (opt-in pending Recall@10 eval) |
+| `QMD_MLX_RERANK_FALLBACK` / `QMD_MLX_EXPAND_FALLBACK` | `1` | Set to `0` for fail-closed (error instead of GGUF fallback) |
+| `MLX_RERANK_MODEL` / `MLX_GENERATE_MODEL` | unset | Daemon-side model selection (also `--rerank-model` / `--generate-model`) |
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
+
+`llm_cache` keys are namespaced by serving backend (`mlx:<daemon-model>` vs the
+GGUF model string), so toggling the opt-in flags can never serve cross-backend
+scores.
 
 ### Metal Benchmark Performance (Apple M2 Pro 32GB)
 

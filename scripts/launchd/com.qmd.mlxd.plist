@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.qmd.mlxd — QMD unified MLX inference daemon (embed + rerank + generate).
+  Installed by: scripts/qmd-mlx-daemon.sh start   (copies this template to
+  ~/Library/LaunchAgents with __REPO__ substituted — never hand-edit the
+  installed copy; edit here and re-run start).
+  Supervision: foreground exec, launchd KeepAlive. No --daemon flag
+  (same lesson as com.qmd.daemon: fork-detach breaks launchd tracking).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qmd.mlxd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/scripts/qmd-mlx-daemon.sh</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/shersingh/.cache/qmd/mlx-daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/shersingh/.cache/qmd/mlx-daemon.log</string>
+</dict>
+</plist>

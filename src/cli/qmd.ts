@@ -460,6 +460,29 @@ async function showStatus(): Promise<void> {
     console.log(`  Generation:  ${hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
   }
 
+  // MLX daemon health (only when MLX backend selected; never fails status)
+  if ((process.env.QMD_EMBED_BACKEND || "").trim().toLowerCase() === "mlx") {
+    console.log(`\n${c.bold}MLX Daemon${c.reset}`);
+    try {
+      const { mlxHealth } = await import("../mlx.js");
+      const h = await mlxHealth();
+      if (h?.ready) {
+        console.log(`  Status:   ${c.green}ready${c.reset}`);
+        console.log(`  Embedding: ${h.model ?? "unknown"}${h.dims ? ` (${h.dims}d)` : ""}`);
+        console.log(`  Rerank:    ${h.rerank_model ?? h.descriptor?.rerank?.model ?? "not configured"}`);
+        console.log(`  Generate:  ${h.generate_model ?? h.descriptor?.generate?.model ?? "not configured"}`);
+      } else if (h) {
+        console.log(`  Status:   ${c.yellow}not ready${c.reset} (state: ${h.state ?? h.status})`);
+        if (h.error) console.log(`  ${c.dim}Error: ${h.error}${c.reset}`);
+      } else {
+        console.log(`  Status:   ${c.yellow}unreachable${c.reset}`);
+        console.log(`  ${c.dim}Start: python scripts/mlx_embed_server.py --model <embed> --rerank-model <rerank> --generate-model <generate> --preload${c.reset}`);
+      }
+    } catch {
+      console.log(`  Status:   ${c.yellow}unreachable${c.reset}`);
+    }
+  }
+
   // Device / GPU info
   try {
     const llm = getDefaultLlamaCpp();

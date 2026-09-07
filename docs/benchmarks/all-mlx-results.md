@@ -98,9 +98,27 @@ is the honest gate; it is what `ground_truth_accuracy.json` records.
 ## Open items (next session)
 
 1. mxfp8 ground-truth accuracy → final rerank-model recommendation
-2. If MLX rerank ships: rerank-cache key must include the MLX model identity
-   (it currently keys on GGUF model string in some paths)
-3. Launchd plist + `qmd status` daemon health preflight (plan §6)
-4. `apply-qmd-local-patches.py` extension if dist patches overlap new routing
-5. `npm pack --dry-run` content check for new modules
+2. ~~If MLX rerank ships: rerank-cache key must include the MLX model identity~~
+   DONE: `LlamaCpp.mlxModelFor()` predicts the serving backend from the memoized
+   daemon descriptor (zero extra I/O); `store.ts` rerank/expandQuery namespace
+   llm_cache keys as `mlx:<daemon-model>` vs the GGUF model string. Daemon-down
+   predicts GGUF, matching the fallback the call takes. Regression tests in
+   `test/store.test.ts` ("MLX backend cache namespacing", 3 tests).
+3. ~~Launchd plist + `qmd status` daemon health preflight (plan §6)~~ DONE:
+   `scripts/qmd-mlx-daemon.sh` (run/start/stop/status) + `scripts/launchd/com.qmd.mlxd.plist`
+   (foreground exec, KeepAlive, RunAtLoad — no `--daemon` flag, same lesson as
+   com.qmd.daemon). `qmd status` shows an MLX Daemon section under
+   QMD_EMBED_BACKEND=mlx (ready + all three models, or unreachable hint; never
+   fails status). Verified live both branches. NOT installed — David runs
+   `start` explicitly when ready.
+4. ~~`apply-qmd-local-patches.py` extension if dist patches overlap new routing~~
+   VERIFIED NO-ACTION: the script patches the installed upstream package
+   (`~/.hermes/node/.../@tobilu/qmd/dist/`) with 3 surgical replacements
+   (embed timeout, RERANK_CANDIDATE_LIMIT, origin guard). None of those anchors
+   were touched by this fork, and the live QMD runs upstream dist, not this repo.
+5. ~~`npm pack --dry-run` content check for new modules~~ DONE: all of
+   scripts/qmd_mlx/*.py, mlx_embed_server.py, bench_mlx.py ship. Fixed a real
+   leak found by the check: `__pycache__/*.pyc` were being packed (Hermes-bundled
+   npm 12 ignores .npmignore when `files` is set) — added `files`-array
+   negations in package.json; re-verified 0 pyc lines.
 6. Optional: 8-bit local conversion of the 4B reranker if 4-bit trails

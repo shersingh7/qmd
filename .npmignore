@@ -1,0 +1,12 @@
+# Keep the published tarball free of local build/runtime artifacts.
+# (Source of truth for what ships is package.json "files": bin/, dist/,
+# scripts/, LICENSE, CHANGELOG.md — this file only subtracts noise.)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.log
+.DS_Store
+**/__pycache__/
+**/*.pyc

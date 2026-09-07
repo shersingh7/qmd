@@ -29,10 +29,17 @@ export interface MlxEmbedConfig {
 
 export interface MlxHealth {
   status: string;
+  state?: string;
   model?: string;
   dims?: number;
   ready: boolean;
-  descriptor?: EmbeddingDescriptor;
+  descriptor?: EmbeddingDescriptor & {
+    rerank?: { model?: string };
+    generate?: { model?: string };
+  };
+  rerank_model?: string | null;
+  generate_model?: string | null;
+  error?: string | null;
 }
 
 export interface MlxMemory {

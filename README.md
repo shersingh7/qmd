@@ -289,7 +289,6 @@ const store = await createStore({
     models: {
       embedBackend: 'mlx',
       mlxUrl: 'http://127.0.0.1:8787',
-      mlxDtype: 'float16',
       mlxConcurrency: 2,
       mlxFallback: true,     // degrade to GGUF if MLX down
     },

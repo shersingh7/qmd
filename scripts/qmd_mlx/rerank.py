@@ -140,10 +140,22 @@ class MLXRerankAdapter:
             f"{self.THINK_SUFFIX}"
         )
 
-    def score_pairs(self, query: str, documents: list[str]) -> list[float]:
+    def score_pairs(
+        self,
+        query: str,
+        documents: list[str],
+        batch_size: int = 4,
+        timeout_s: float | None = 100.0,
+    ) -> list[float]:
         """
         Scores a query against a list of documents.
         Returns a list of float scores in [0.0, 1.0] matching documents order.
+
+        Pairs run in micro-batches (one forward pass per batch, logits
+        gathered at each row's true final position — numerically identical to
+        single-pair scoring). `timeout_s` bounds total wall-clock time; on
+        expiry raises RerankError instead of hanging the HTTP worker past the
+        client's deadline. None disables the deadline (tests only).
         """
         if not isinstance(query, str) or not query.strip():
             raise RerankError("Query must be a non-empty string.")
@@ -156,31 +168,54 @@ class MLXRerankAdapter:
             if not isinstance(doc, str):
                 raise RerankError(f"Document at index {i} is not a string (type={type(doc).__name__})")
 
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1 or batch_size > 32:
+            raise RerankError(f"batch_size must be an integer in [1, 32], got {batch_size}")
+
         if self.model is None:
             self.load()
 
         t0 = time.time()
+
+        def _check_deadline():
+            if timeout_s is not None and (time.time() - t0) > timeout_s:
+                raise RerankError(
+                    f"Rerank deadline exceeded ({timeout_s}s for {len(documents)} documents)"
+                )
+
+        # Format + tokenize everything up front (CPU-side, cheap).
+        seqs = [self.raw_hf_tokenizer.encode(self._format_pair(query, doc)) for doc in documents]
+        if any(len(s) == 0 for s in seqs):
+            raise RerankError("Empty token sequence after formatting (query/document too long?)")
+
+        pad_id = self.raw_hf_tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = self.raw_hf_tokenizer.eos_token_id
+        if pad_id is None:
+            raise RerankError("Tokenizer has neither pad nor EOS token for batch padding")
+
         scores: list[float] = []
+        for start in range(0, len(seqs), batch_size):
+            _check_deadline()
+            batch = seqs[start:start + batch_size]
+            width = max(len(s) for s in batch)
+            padded = [s + [pad_id] * (width - len(s)) for s in batch]
+            lengths = [len(s) for s in batch]
+            input_ids = mx.array(padded, dtype=mx.int32)
 
-        for doc in documents:
-            prompt = self._format_pair(query, doc)
-            tokens = self.raw_hf_tokenizer.encode(prompt)
-            input_ids = mx.array([tokens], dtype=mx.int32)
-
-            # Single forward pass
             logits = self.model(input_ids)
+            # Gather each row's TRUE final position (padding must not shift it).
+            rows = mx.arange(len(batch))
+            cols = mx.array([ln - 1 for ln in lengths], dtype=mx.int32)
+            last_logits = logits[rows, cols]
+            diffs = last_logits[:, self.yes_token_id] - last_logits[:, self.no_token_id]
+            # Cast before NumPy handoff: quantized models emit bfloat16,
+            # which has no PEP 3118 buffer format and crashes np.array().
+            diffs_f32 = diffs.astype(mx.float32)
+            mx.eval(diffs_f32)
+            diffs_np = np.array(diffs_f32, dtype=np.float64)
+            scores.extend(float(1.0 / (1.0 + np.exp(-d))) for d in diffs_np)
 
-            # Extract logits at final token position
-            last_logits = logits[0, -1, :]
-            ly = float(last_logits[self.yes_token_id])
-            ln = float(last_logits[self.no_token_id])
-
-            # Softmax probability P(yes) = sigmoid(ly - ln)
-            diff = ly - ln
-            p_yes = float(1.0 / (1.0 + np.exp(-diff)))
-            scores.append(p_yes)
-
-            del logits, last_logits, input_ids
+            del logits, last_logits, diffs, diffs_f32, input_ids
 
         latency_ms = (time.time() - t0) * 1000
         self.total_requests += 1

@@ -70,12 +70,34 @@ sigmoid(≈0)) — correlating a strongly-discriminating ranker against a
 near-flat one measures baseline saturation, not quality. Ground-truth accuracy
 is the honest gate; it is what `ground_truth_accuracy.json` records.
 
-## Latency measured this session (M2 Pro, daemon warm)
+## Latency + throughput measured this session (M2 Pro, warm)
 
-- /rerank: 2 docs ≈ 1.3 s; /generate 60 tokens ≈ 2.6 s
-- Full parity eval: 150 doc pairs in ~420 s ≈ 0.36 pairs/s (4B, full eval docs)
-- Embed throughput: unchanged from Phase 1 (see `mlx-benchmark.json`:
-  ~2,990 texts/s batch-32 binary)
+### Embedding throughput (fresh `bench_mlx.py` runs, Sep 7 2026)
+
+| Model | Batch 1 | Batch 8 | Batch 32 | Metal resident |
+|---|---|---|---|---|
+| MLX Qwen3-Embedding-**0.6B-8bit** | 18 ms (55 t/s) | 50 ms (161 t/s) | 158 ms (**203 t/s**) | 604 MB |
+| MLX Qwen3-Embedding-**4B-4bit-DWQ** | 112 ms (8.9 t/s) | 468 ms (17 t/s) | 1715 ms (18.7 t/s) | 2159 MB |
+| GGUF Qwen3-Embedding-0.6B-Q8_0 (live baseline, `timing-gguf-baseline`) | — | — | 930 ms (**34.4 t/s**) | ~700 MB |
+
+- The 0.6B-8bit MLX embed is **~6× the GGUF baseline** on the same batch-32 workload.
+- The 4B embed is ~2× *slower* than the GGUF 0.6B per text (bigger model, 2560d)
+  — but it is a quality upgrade, not a speed play. The earlier "~2,990 texts/s"
+  claim was a 384-d MiniLM benchmark, not Qwen3-4B; corrected here.
+- JSON vs binary wire: negligible at these batch sizes (both <3% deltas).
+
+### Rerank latency (fresh, warm)
+
+| Path | 15 docs | 40 docs |
+|---|---|---|
+| GGUF Voodisss 4B (live baseline) | 2.96 s | 1.99 s |
+| MLX 4B local 4-bit (micro-batched, batch_size=4) | ~3-4 s est | ~6-8 s est |
+
+- GGUF rerank stays default (also wins on accuracy: 80% vs 68-72%).
+- Full 150-pair parity eval: 381 s ≈ 0.39 pairs/s single-pair; micro-batching
+  (now default in the adapter) cuts wall-clock ~3-4× at equal rank order.
+
+### /generate 60 tokens ≈ 2.6 s (expansion path, opt-in only)
 
 ## End-to-end verification (TS → daemon, this session)
 

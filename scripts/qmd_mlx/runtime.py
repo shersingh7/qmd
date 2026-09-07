@@ -37,6 +37,7 @@ class MLXEmbeddingRuntime:
         max_length: int = 2048,
         revision: Optional[str] = None,
         trust_remote_code: bool = False,
+        max_batch_tokens: int = 0,
     ):
         if not _MLX_AVAILABLE:
             raise MLXRuntimeError("MLX is not installed. Please install mlx and mlx-lm.")
@@ -47,6 +48,13 @@ class MLXEmbeddingRuntime:
         self.max_length = max_length
         self.revision = revision
         self.trust_remote_code = trust_remote_code
+        # Length-aware micro-batching: bounds per-forward-pass padded tokens
+        # so production batches (32 x ~900-token chunks) split into safe
+        # micro-batches instead of one giant OOM-prone forward pass.
+        from .batching import BatchPlanner
+        self.batch_planner = BatchPlanner(
+            max_batch_tokens=max_batch_tokens if max_batch_tokens > 0 else None
+        )
 
         self.model: Any = None
         self.tokenizer: Any = None
@@ -207,7 +215,13 @@ class MLXEmbeddingRuntime:
 
             t0 = time.time()
             try:
-                res = self._embed_sync(texts, requested_dims, is_query)
+                # Length-aware micro-batching (never one giant forward pass).
+                res = self.batch_planner.plan_and_execute(
+                    texts,
+                    self.raw_hf_tokenizer,
+                    lambda batch: self._embed_sync(batch, requested_dims, is_query),
+                    self.max_length,
+                )
                 latency_ms = (time.time() - t0) * 1000
                 self.total_requests += 1
                 self.total_latency_ms += latency_ms

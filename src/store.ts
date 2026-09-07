@@ -2292,35 +2292,76 @@ export async function chunkDocumentByTokens(
   // Use AST-aware chunking for the first pass when filepath/strategy provided
   let charChunks = await chunkDocumentAsync(content, maxChars, overlapChars, windowChars, filepath, chunkStrategy);
 
-  // Tokenize and split any chunks that still exceed limit
-  const results: { text: string; pos: number; tokens: number }[] = [];
+  // Tokenize and split any chunks that still exceed limit.
+  //
+  // Prefer one batched MLX daemon call (real BPE counts, no GGUF load) when
+  // the MLX embed path is active; fall back to per-chunk local tokenization
+  // (exact under GGUF, word-split estimate under MLX without a daemon).
+  // Phase 1: token counts for every char chunk. Prefer one batched MLX
+  // daemon call (real BPE counts, no GGUF load); fall back to per-chunk local
+  // tokenization (exact under GGUF, word-split estimate under MLX w/o daemon).
+  const mlxFn = (llm as unknown as { mlxTokenize?: (t: string[]) => Promise<number[] | null> }).mlxTokenize;
+  let mlxCounts: number[] | null = null;
+  if (typeof mlxFn === 'function' && !signal?.aborted) {
+    try {
+      mlxCounts = await mlxFn.call(llm, charChunks.map((c) => c.text));
+    } catch {
+      mlxCounts = null;
+    }
+    if (mlxCounts && mlxCounts.length !== charChunks.length) mlxCounts = null;
+  }
 
-  for (const chunk of charChunks) {
+  // In-order expansion: oversize chunks are replaced by their sub-chunks at
+  // the same position (downstream assigns seq positionally — order matters).
+  // Each entry carries its final token count (phase-1 batch) or null when the
+  // sub-chunk still needs measuring in phase 2.
+  const expanded: { text: string; pos: number; tokens: number | null }[] = [];
+
+  for (let i = 0; i < charChunks.length; i++) {
+    const chunk = charChunks[i]!;
     // Respect abort signal to avoid runaway tokenization
     if (signal?.aborted) break;
 
-    const tokens = await llm.tokenize(chunk.text);
+    const count = mlxCounts ? (mlxCounts[i] ?? 0) : (await llm.tokenize(chunk.text)).length;
 
-    if (tokens.length <= maxTokens) {
-      results.push({ text: chunk.text, pos: chunk.pos, tokens: tokens.length });
+    if (count <= maxTokens) {
+      expanded.push({ text: chunk.text, pos: chunk.pos, tokens: count });
     } else {
-      // Chunk is still too large - split it further
-      // Use actual token count to estimate better char limit
-      const actualCharsPerToken = chunk.text.length / tokens.length;
+      // Chunk is still too large - split it further using the actual ratio.
+      const actualCharsPerToken = count > 0 ? chunk.text.length / count : avgCharsPerToken;
       const safeMaxChars = Math.floor(maxTokens * actualCharsPerToken * 0.95); // 5% safety margin
-
-      const subChunks = chunkDocument(chunk.text, safeMaxChars, Math.floor(overlapChars * actualCharsPerToken / 2), Math.floor(windowChars * actualCharsPerToken / 2));
-
-      for (const subChunk of subChunks) {
-        if (signal?.aborted) break;
-        const subTokens = await llm.tokenize(subChunk.text);
-        results.push({
-          text: subChunk.text,
-          pos: chunk.pos + subChunk.pos,
-          tokens: subTokens.length,
-        });
+      const subs = chunkDocument(chunk.text, safeMaxChars, Math.floor(overlapChars * actualCharsPerToken / 2), Math.floor(windowChars * actualCharsPerToken / 2));
+      for (const sub of subs) {
+        expanded.push({ text: sub.text, pos: chunk.pos + sub.pos, tokens: null });
       }
     }
+  }
+
+  // Phase 2: measure uncounted sub-chunks — one batch call when possible,
+  // per-chunk local tokenization as fallback.
+  const uncounted = expanded.filter((e) => e.tokens === null);
+  if (uncounted.length > 0 && !signal?.aborted) {
+    let subCounts: number[] | null = null;
+    if (mlxCounts && typeof mlxFn === 'function') {
+      try {
+        subCounts = await mlxFn.call(llm, uncounted.map((e) => e.text));
+      } catch {
+        subCounts = null;
+      }
+      if (subCounts && subCounts.length !== uncounted.length) subCounts = null;
+    }
+    for (let k = 0; k < uncounted.length; k++) {
+      if (signal?.aborted) break;
+      uncounted[k]!.tokens = subCounts
+        ? (subCounts[k] ?? 0)
+        : (await llm.tokenize(uncounted[k]!.text)).length;
+    }
+  }
+
+  const results: { text: string; pos: number; tokens: number }[] = [];
+  for (const item of expanded) {
+    if (signal?.aborted) break;
+    results.push({ text: item.text, pos: item.pos, tokens: item.tokens ?? 0 });
   }
 
   return results;

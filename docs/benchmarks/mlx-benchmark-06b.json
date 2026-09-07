@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-07T17:34:01Z",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "processor": "arm",
+    "version": "Darwin Kernel Version 27.0.0: Tue Aug 11 22:06:20 PDT 2026; root:xnu-13432.1.9~3/RELEASE_ARM64_T6020",
+    "python": "3.12.13"
+  },
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "model": "mlx-community/Qwen3-Embedding-0.6B-8bit",
+    "revision": "",
+    "pooling": "last_token",
+    "nativeDimensions": 1024,
+    "outputDimensions": 1024,
+    "maxTokens": 2048,
+    "normalized": true,
+    "dtype": "float32",
+    "quantization": "bf16"
+  },
+  "benchmarks": [
+    {
+      "batch_size": 8,
+      "json": {
+        "p50_ms": 55.64,
+        "p95_ms": 56.15,
+        "texts_per_sec": 143.8
+      },
+      "binary": {
+        "p50_ms": 51.16,
+        "p95_ms": 55.04,
+        "texts_per_sec": 156.4
+      },
+      "memory_mb": {
+        "active_mb": 603.8,
+        "peak_mb": 852.0,
+        "model_mb": 603.8
+      }
+    },
+    {
+      "batch_size": 32,
+      "json": {
+        "p50_ms": 185.4,
+        "p95_ms": 187.85,
+        "texts_per_sec": 172.6
+      },
+      "binary": {
+        "p50_ms": 157.94,
+        "p95_ms": 162.97,
+        "texts_per_sec": 202.6
+      },
+      "memory_mb": {
+        "active_mb": 603.8,
+        "peak_mb": 1237.8,
+        "model_mb": 603.8
+      }
+    }
+  ]
+}

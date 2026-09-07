@@ -454,10 +454,14 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
+    // These URIs are the GGUF defaults. Under QMD_EMBED_BACKEND=mlx the live
+    // models come from the daemon — the MLX Daemon section below reports them.
+    const mlxNote = ` ${c.dim}(see MLX Daemon below)${c.reset}`;
+    const mlxOn = (process.env.QMD_EMBED_BACKEND || "").trim().toLowerCase() === "mlx";
     console.log(`\n${c.bold}Models${c.reset}`);
-    console.log(`  Embedding:   ${hfLink(DEFAULT_EMBED_MODEL_URI)}`);
-    console.log(`  Reranking:   ${hfLink(DEFAULT_RERANK_MODEL_URI)}`);
-    console.log(`  Generation:  ${hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
+    console.log(`  Embedding:   ${mlxOn ? `MLX daemon${mlxNote}` : hfLink(DEFAULT_EMBED_MODEL_URI)}`);
+    console.log(`  Reranking:   ${mlxOn && process.env.QMD_MLX_RERANK === "1" ? `MLX daemon${mlxNote}` : hfLink(DEFAULT_RERANK_MODEL_URI)}`);
+    console.log(`  Generation:  ${mlxOn && process.env.QMD_MLX_EXPAND === "1" ? `MLX daemon${mlxNote}` : hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
   }
 
   // MLX daemon health (only when MLX backend selected; never fails status)

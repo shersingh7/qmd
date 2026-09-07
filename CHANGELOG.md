@@ -10,12 +10,26 @@
 - **Token-Once Length Bucketing & RAM-Aware Micro-Batching**: Single-pass tokenization, length-sorted execution with exact order restoration, dynamic memory budgeting, and micro-batch shrink on allocation failures.
 - **Progressive Overfetch in `searchVec`**: Scoped collection retrieval without illegal virtual table KNN JOINs, avoiding false negative drops when global KNN is saturated by other collections.
 - **Metal Benchmark Suite**: `scripts/bench_mlx.py` generating reproducible JSON benchmarks with throughput, latency percentiles, and unified memory metrics.
+- **Length-aware micro-batching in the embedding runtime**: every embed request routes through `BatchPlanner` (single-pass tokenization, length-sorted micro-batches bounded by a RAM-scaled padded-token budget, exact order restoration, OOM retry). Previously the planner existed but was orphaned — batches ran as one giant forward pass. `--max-batch-tokens` now passes through to the runtime.
+- **Unified MLX inference daemon**: `/rerank` (Qwen3-Reranker yes/no scoring with the official thinking-close suffix) and `/generate` (query-expansion completions) endpoints alongside embedding, with per-endpoint validation, a server-side rerank deadline, and adapter descriptors in `/health` + `/descriptor`.
+- **Opt-in TS fast-paths**: `QMD_MLX_RERANK=1` / `QMD_MLX_EXPAND=1` route reranking and query expansion through the daemon (GGUF stays default; kill-switches `QMD_MLX_RERANK=0` / `QMD_MLX_EXPAND=0`, fail-closed `QMD_MLX_RERANK_FALLBACK=0` / `QMD_MLX_EXPAND_FALLBACK=0`).
+- **Backend-namespaced `llm_cache`**: rerank/expansion cache keys use `mlx:<daemon-model>` vs the GGUF model string, so toggling backends can never serve cross-backend scores.
+- **Daemon supervision + status**: `scripts/qmd-mlx-daemon.sh` (run/start/stop/status), `scripts/launchd/com.qmd.mlxd.plist` (foreground exec, KeepAlive), and an MLX Daemon section in `qmd status` reporting all three live models.
 
 ### Fixed
 - Fixed TS2304 `BodyInit` type compilation error in `src/mlx.ts`.
 - Fixed causal LM logits vs hidden states bug where `model(input_ids)` projected into 151k vocabulary dimension instead of embedding dimensions.
 - Fixed unvalidated fallback from MLX to GGUF that silently substituted embedding spaces; MLX backend selection is now fail-closed by default.
 - Fixed duplicate embedding of chunk 0 during dimension probing in `generateEmbeddings`.
+- Fixed MLX chunking token counts: the chunker used word-split estimates under the MLX backend (undercounting code/CJK, risking silent daemon-side truncation); it now uses one batched daemon `/tokenize` call with local fallback.
+- Fixed unbounded rerank latency: micro-batched scoring (default 4 pairs/forward, rank-identical to single-pair) plus a 100s server-side deadline returning 503 instead of hanging past the client timeout.
+- Fixed bfloat16→NumPy crash in batched rerank scoring (no PEP 3118 format for bf16; cast to float32 first).
+- Fixed misleading `qmd status` Models section (showed GGUF URIs while MLX served); now defers to the live daemon report.
+- Deprecated no-op `mlxDtype` (daemon serves pre-quantized weights; precision comes from the model repo).
+- Fixed published tarball leaking `__pycache__/*.pyc` (bundled npm ignores `.npmignore` when `files` is set; added `files`-array negations).
+- Fixed orphaned `BatchPlanner`: the server constructed it but nothing called it — embedding batches ran as single unbounded forward passes (OOM risk on large batches). Now wired into the runtime owner with `--max-batch-tokens` passthrough.
+- Fixed stale README throughput claim: "~2,990 texts/s" was a 384-d MiniLM benchmark, not Qwen3-4B; real Qwen3 numbers documented per-model (0.6B-8bit ≈ 203 texts/s batch-32 ≈ 6× GGUF; 4B ≈ 18.7 texts/s).
+- Pinned `mlx-lm>=0.31.0` (generate adapter uses the `make_sampler` API) and added `huggingface_hub` (transitively required) to server requirements.
 
 ## [2.1.0] - 2026-04-05
 

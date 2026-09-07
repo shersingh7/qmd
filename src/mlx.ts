@@ -314,6 +314,36 @@ export async function generateWithMlx(
   return text;
 }
 
+/**
+ * Batch tokenization via the MLX daemon (/tokenize). Returns per-text token
+ * counts, or null when the daemon is unreachable/misconfigured.
+ * Used by the chunking path to get REAL BPE counts without loading GGUF
+ * weights (llm.tokenize() under the MLX backend only returns word-split
+ * estimates, which undercount code/CJK text and risk silent truncation).
+ */
+export async function tokenizeWithMlx(
+  texts: string[],
+  config?: MlxEmbedConfig,
+): Promise<number[] | null> {
+  if (texts.length === 0) return [];
+  const res = await _fetchJson(`${url(config)}/tokenize`, { texts }, Math.max(timeoutMs(config), 30_000));
+  if (!res.ok || !res.data) {
+    return null;
+  }
+  const counts = res.data.counts;
+  if (!Array.isArray(counts) || counts.length !== texts.length) {
+    console.error(`MLX tokenize returned ${Array.isArray(counts) ? counts.length : typeof counts} counts, expected ${texts.length}`);
+    return null;
+  }
+  for (const c of counts) {
+    if (typeof c !== "number" || !Number.isInteger(c) || c < 0) {
+      console.error("MLX tokenize returned a non-integer count");
+      return null;
+    }
+  }
+  return counts;
+}
+
 export async function mlxHealth(config?: MlxEmbedConfig): Promise<MlxHealth | null> {
   try {
     const resp = await fetch(`${url(config)}/health`, {

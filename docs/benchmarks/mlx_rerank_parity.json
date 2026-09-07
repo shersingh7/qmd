@@ -1,32 +1,25 @@
 {
   "gate": {
-    "top1Agreement": 0.84,
-    "meanSpearman": 0.4411,
+    "top1Agreement": 0.8,
+    "meanSpearman": 0.3743,
     "threshold": {
       "top1Agreement": 0.9,
       "meanSpearman": 0.8
     },
-    "verdict": "FAIL",
-    "groundTruth": {
-      "ggufTop1Accuracy": 0.8,
-      "mlxTop1Accuracy": 0.68,
-      "ggufHits": 20,
-      "mlxHits": 17,
-      "n": 25
-    }
+    "verdict": "FAIL"
   },
-  "overallSpearman": 0.4746,
+  "overallSpearman": 0.4479,
   "meanTop3Overlap": 1.88,
   "pairsScored": 150,
   "timings": {
-    "modelLoadSeconds": 0.72,
-    "inferenceSeconds": 328.18,
-    "pairsPerSecond": 0.46
+    "modelLoadSeconds": 1.15,
+    "inferenceSeconds": 381.3,
+    "pairsPerSecond": 0.39
   },
   "perQuery": [
     {
       "query": "that tradeoff between data correctness and always being up",
-      "spearman": 0.3143,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
@@ -34,15 +27,15 @@
     },
     {
       "query": "what we learned from the dashboard thing",
-      "spearman": 0.2143,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "product-launch-retrospective",
       "top1_mlx": "product-launch-retrospective",
-      "top3_overlap": 1
+      "top3_overlap": 2
     },
     {
       "query": "how much we're burning through each month",
-      "spearman": 0.6,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "startup-fundraising-memo",
       "top1_mlx": "startup-fundraising-memo",
@@ -50,7 +43,7 @@
     },
     {
       "query": "when do I need to be online",
-      "spearman": 0.3143,
+      "spearman": 0.3714,
       "top1_match": false,
       "top1_gguf": "remote-work-policy",
       "top1_mlx": "distributed-systems-overview",
@@ -62,19 +55,19 @@
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
-      "top3_overlap": 3
+      "top3_overlap": 2
     },
     {
       "query": "why we pushed back the release date",
-      "spearman": 0.4286,
-      "top1_match": true,
+      "spearman": 0.0857,
+      "top1_match": false,
       "top1_gguf": "product-launch-retrospective",
-      "top1_mlx": "product-launch-retrospective",
+      "top1_mlx": "distributed-systems-overview",
       "top3_overlap": 2
     },
     {
       "query": "how to structure URLs for our service",
-      "spearman": 0.8857,
+      "spearman": 0.7714,
       "top1_match": true,
       "top1_gguf": "api-design-principles",
       "top1_mlx": "api-design-principles",
@@ -82,15 +75,15 @@
     },
     {
       "query": "preventing the model from just memorizing",
-      "spearman": 0.6,
-      "top1_match": false,
+      "spearman": 0.5,
+      "top1_match": true,
       "top1_gguf": "machine-learning-primer",
-      "top1_mlx": "product-launch-retrospective",
+      "top1_mlx": "machine-learning-primer",
       "top3_overlap": 2
     },
     {
       "query": "who we're pitching to first",
-      "spearman": 0.5,
+      "spearman": 0.2571,
       "top1_match": true,
       "top1_gguf": "startup-fundraising-memo",
       "top1_mlx": "startup-fundraising-memo",
@@ -98,7 +91,7 @@
     },
     {
       "query": "can I work from another country",
-      "spearman": 0.4857,
+      "spearman": 0.3143,
       "top1_match": true,
       "top1_gguf": "remote-work-policy",
       "top1_mlx": "remote-work-policy",
@@ -106,7 +99,7 @@
     },
     {
       "query": "how the beta users found problems",
-      "spearman": 0.1429,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "product-launch-retrospective",
       "top1_mlx": "product-launch-retrospective",
@@ -114,7 +107,7 @@
     },
     {
       "query": "that thing Leslie Lamport invented",
-      "spearman": 0.2571,
+      "spearman": 0.3143,
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
@@ -122,7 +115,7 @@
     },
     {
       "query": "what happens when the network splits",
-      "spearman": 0.2571,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
@@ -130,7 +123,7 @@
     },
     {
       "query": "teaching computers to find patterns",
-      "spearman": 0.4857,
+      "spearman": 0.6,
       "top1_match": true,
       "top1_gguf": "machine-learning-primer",
       "top1_mlx": "machine-learning-primer",
@@ -138,7 +131,7 @@
     },
     {
       "query": "how much runway before we're out of cash",
-      "spearman": 0.6,
+      "spearman": 0.3714,
       "top1_match": true,
       "top1_gguf": "startup-fundraising-memo",
       "top1_mlx": "startup-fundraising-memo",
@@ -146,7 +139,7 @@
     },
     {
       "query": "the 47 issues we found before shipping",
-      "spearman": 0.0286,
+      "spearman": 0.0857,
       "top1_match": true,
       "top1_gguf": "product-launch-retrospective",
       "top1_mlx": "product-launch-retrospective",
@@ -154,15 +147,15 @@
     },
     {
       "query": "grouping customers by behavior",
-      "spearman": 0.3,
-      "top1_match": true,
+      "spearman": 0.0286,
+      "top1_match": false,
       "top1_gguf": "product-launch-retrospective",
-      "top1_mlx": "product-launch-retrospective",
+      "top1_mlx": "distributed-systems-overview",
       "top3_overlap": 2
     },
     {
       "query": "why URLs should be things not actions",
-      "spearman": 0.8286,
+      "spearman": 0.7714,
       "top1_match": true,
       "top1_gguf": "api-design-principles",
       "top1_mlx": "api-design-principles",
@@ -170,7 +163,7 @@
     },
     {
       "query": "what Eric Brewer proved you can't have",
-      "spearman": 0.3714,
+      "spearman": 0.0857,
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
@@ -186,7 +179,7 @@
     },
     {
       "query": "days everyone needs to be in the office",
-      "spearman": 0.5429,
+      "spearman": 0.3143,
       "top1_match": true,
       "top1_gguf": "remote-work-policy",
       "top1_mlx": "remote-work-policy",
@@ -194,23 +187,23 @@
     },
     {
       "query": "the number that shows customers are expanding",
-      "spearman": 0.3,
+      "spearman": -0.0286,
       "top1_match": false,
       "top1_gguf": "startup-fundraising-memo",
-      "top1_mlx": "product-launch-retrospective",
+      "top1_mlx": "distributed-systems-overview",
       "top3_overlap": 2
     },
     {
       "query": "telling spam from real email",
-      "spearman": -0.2714,
+      "spearman": -0.1429,
       "top1_match": false,
       "top1_gguf": "machine-learning-primer",
-      "top1_mlx": "product-launch-retrospective",
+      "top1_mlx": "distributed-systems-overview",
       "top3_overlap": 1
     },
     {
       "query": "how to get user 123's purchases",
-      "spearman": 0.8857,
+      "spearman": 0.7714,
       "top1_match": true,
       "top1_gguf": "api-design-principles",
       "top1_mlx": "api-design-principles",
@@ -218,7 +211,7 @@
     },
     {
       "query": "zookeeper etcd consul what they have in common",
-      "spearman": 0.6429,
+      "spearman": 0.7143,
       "top1_match": true,
       "top1_gguf": "distributed-systems-overview",
       "top1_mlx": "distributed-systems-overview",
@@ -228,7 +221,7 @@
   "adapterDescriptor": {
     "version": 1,
     "backend": "mlx",
-    "model": "mlx-community/Qwen3-Reranker-4B-mxfp8",
+    "model": "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
     "revision": "",
     "quantization": "mxfp8",
     "dtype": "bfloat16",

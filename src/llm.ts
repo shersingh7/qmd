@@ -393,10 +393,10 @@ export type LlamaCppConfig = {
    */
   mlxUrl?: string;
   /**
-   * MLX compute dtype: float32, float16, bfloat16.
-   * float16 halves GPU memory & doubles throughput on M2 Pro AMX coprocessor.
+   * @deprecated No-op: the daemon serves pre-quantized weights; precision
+   * comes from the model repo (e.g. -4bit vs -8bit), not this flag.
    */
-  mlxDtype?: 'float32' | 'float16' | 'bfloat16';
+   mlxDtype?: 'float32' | 'float16' | 'bfloat16';
   /**
    * When true (default), MLX mode auto-falls-back to GGUF if the Python server is unreachable.
    * Set to false to hard-fail when MLX is configured but unavailable.
@@ -510,7 +510,16 @@ export class LlamaCpp implements LLM {
 
     this.embedBackend = resolved.backend;
     this.mlxUrlOverride = resolved.mlxUrl;
+    // DEPRECATED (no-op): the daemon serves pre-quantized weights, so there is
+    // no runtime dtype to select. Kept for config compatibility; warns once when
+    // explicitly set so stale configs don't silently believe it applies.
     this.mlxDtype = config.mlxDtype ?? 'float32';
+    if (config.mlxDtype !== undefined) {
+      console.warn(
+        `QMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves ` +
+        `pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).`
+      );
+    }
     this.mlxConcurrency = resolved.mlxConcurrency;
     this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
     this.mlxFallback = config.mlxFallback ?? true;
@@ -1200,6 +1209,22 @@ export class LlamaCpp implements LLM {
           `Start server with 'python scripts/mlx_embed_server.py --preload' or configure QMD_EMBED_BACKEND=gguf. (${err instanceof Error ? err.message : String(err)})`
         );
       }
+    }
+  }
+
+  /**
+   * Batch token counts via the MLX daemon. Returns null unless the MLX embed
+   * path is active and the daemon answers — callers fall back to local
+   * (GGUF or estimated) counts. Batched in one round-trip.
+   */
+  async mlxTokenize(texts: string[]): Promise<number[] | null> {
+    if (this.embedBackend !== 'mlx' || this.mlxFailed || texts.length === 0) return null;
+    try {
+      await this._ensureMlxClient();
+      const { tokenizeWithMlx } = await import('./mlx.js');
+      return await tokenizeWithMlx(texts, this.mlxUrlOverride ? { url: this.mlxUrlOverride } : undefined);
+    } catch {
+      return null;
     }
   }
 

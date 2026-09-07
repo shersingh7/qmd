@@ -1,10 +1,12 @@
-# QMD MLX Embedding Server Requirements
-# Tested with Python 3.11 / 3.12 / 3.14 on macOS Apple Silicon
+# QMD MLX server requirements — Apple Silicon only.
+# Verified against mlx 0.32.2 / mlx-lm 0.31.3 (Sep 2026). The generate adapter
+# uses mlx_lm's sampler API (make_sampler), which requires mlx-lm >= 0.31.
 
 mlx>=0.22.0
-mlx-lm>=0.12.0
+mlx-lm>=0.31.0
 mlx-embedding-models>=0.0.11
 transformers>=4.40.0
+huggingface_hub>=0.20.0
 numpy>=1.26.0
 safetensors>=0.4.0
 pytest>=8.0.0

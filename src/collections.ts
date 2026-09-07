@@ -44,7 +44,7 @@ export interface ModelsConfig {
   embedBackend?: 'gguf' | 'mlx';
   /** MLX server URL when embedBackend='mlx' (default: http://127.0.0.1:8787) */
   mlxUrl?: string;
-  /** MLX compute dtype: float32, float16, bfloat16 */
+  /** @deprecated No-op: the daemon serves pre-quantized weights. Kept for config compat. */
   mlxDtype?: 'float32' | 'float16' | 'bfloat16';
   /** When true (default), auto-fall-back to GGUF if MLX server is unreachable */
   mlxFallback?: boolean;

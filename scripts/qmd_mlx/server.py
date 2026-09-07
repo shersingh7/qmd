@@ -16,7 +16,6 @@ from .protocol import (
     ProtocolError,
 )
 from .runtime import MLXEmbeddingRuntime, MLXRuntimeError
-from .batching import BatchPlanner
 
 
 def _validate_rerank_request(payload: dict) -> tuple[str, list[str]]:
@@ -66,7 +65,6 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
     # Injected by server
     runtime: Optional[MLXEmbeddingRuntime] = None
-    batch_planner: Optional[BatchPlanner] = None
     rerank_adapter: Optional[Any] = None
     generate_adapter: Optional[Any] = None
     state: str = ServerState.STARTING
@@ -310,9 +308,6 @@ def start_server(
     MLXHTTPRequestHandler.bind_host = bind_host
     MLXHTTPRequestHandler.state = ServerState.STARTING
 
-    batch_planner = BatchPlanner(max_batch_tokens=max_batch_tokens if max_batch_tokens > 0 else None)
-    MLXHTTPRequestHandler.batch_planner = batch_planner
-
     server = ThreadedMLXServer((bind_host, port), MLXHTTPRequestHandler)
 
     def _init_and_serve():
@@ -324,6 +319,7 @@ def start_server(
                     quantization=quantization,
                     dtype_str=dtype_str,
                     max_length=max_length,
+                    max_batch_tokens=max_batch_tokens,
                 )
                 if warmup:
                     runtime.warmup()

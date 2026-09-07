@@ -86,6 +86,53 @@ def test_rerank_invalid_and_empty_inputs():
         adapter.score_pairs("query", [123])
 
 
+LOCAL_4B = "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit"
+
+
+def test_rerank_batch_equivalence():
+    """Micro-batched scoring must match single-pair scoring numerically."""
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter
+    adapter = MLXRerankAdapter(model_name=LOCAL_4B)
+
+    query = "tradeoff between data consistency and availability"
+    docs = [
+        "The CAP theorem states a distributed system can only guarantee two of Consistency, Availability, and Partition tolerance.",
+        "Our vacation policy allows 20 days per year.",
+        "Raft and Paxos are distributed consensus algorithms for replicated state machines.",
+        "Making chocolate chip cookies requires flour, sugar, butter, and chocolate chips.",
+        "API endpoint design guidelines for REST services.",
+    ]
+
+    single = adapter.score_pairs(query, docs, batch_size=1, timeout_s=None)
+    batched = adapter.score_pairs(query, docs, batch_size=4, timeout_s=None)
+    assert len(single) == len(batched) == 5
+
+    # Same-shape scoring is exactly deterministic.
+    repeat = adapter.score_pairs(query, docs, batch_size=4, timeout_s=None)
+    np.testing.assert_array_equal(batched, repeat)
+
+    # Across batch shapes, bf16 reduction order drifts scores slightly
+    # (measured <= 0.02 absolute on 4-bit weights). What must hold exactly
+    # is the RANK order — batching must never reorder results.
+    assert np.argsort(np.argsort(single)).tolist() == np.argsort(np.argsort(batched)).tolist()
+    np.testing.assert_allclose(single, batched, rtol=0.1, atol=0.05)
+
+    # And the ranking is still correct (sanity: relevant docs on top).
+    assert single[0] > single[1]
+    assert single[0] > single[3]
+
+
+def test_rerank_deadline():
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
+    adapter = MLXRerankAdapter(model_name=LOCAL_4B)
+
+    with pytest.raises(RerankError, match="[Dd]eadline"):
+        adapter.score_pairs("query", ["doc one", "doc two"], timeout_s=-1)
+
+    with pytest.raises(RerankError, match="batch_size"):
+        adapter.score_pairs("query", ["doc"], batch_size=0)
+
+
 def test_rerank_truncation_preserves_query():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(

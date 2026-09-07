@@ -1723,7 +1723,14 @@ async function vectorIndex(
     return;
   }
 
-  console.log(`${c.dim}Model: ${model}${c.reset}\n`);
+  // Show the EFFECTIVE model: under the MLX backend the `model` argument is
+  // only a cache label — vectors come from the daemon. (This line once sent
+  // operators chasing a GGUF ghost while MLX did the work.)
+  let effectiveModel = model;
+  try {
+    effectiveModel = getDefaultLlamaCpp().embedModelName;
+  } catch { /* default instance unavailable — show requested label */ }
+  console.log(`${c.dim}Model: ${effectiveModel}${c.reset}\n`);
   if (batchOptions?.maxDocsPerBatch !== undefined || batchOptions?.maxBatchBytes !== undefined) {
     const maxDocsPerBatch = batchOptions.maxDocsPerBatch ?? DEFAULT_EMBED_MAX_DOCS_PER_BATCH;
     const maxBatchBytes = batchOptions.maxBatchBytes ?? DEFAULT_EMBED_MAX_BATCH_BYTES;

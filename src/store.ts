@@ -1480,7 +1480,7 @@ export async function generateEmbeddings(
     let descriptor: EmbeddingDescriptor | undefined;
     if (typeof session.getDescriptor === "function") {
       try {
-        descriptor = await session.getDescriptor();
+        descriptor = (await session.getDescriptor()) ?? undefined;
       } catch {}
     }
 

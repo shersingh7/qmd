@@ -48,10 +48,22 @@ cmd_start() {
   # Bootout first: makes start idempotent (no silent no-op when a stale
   # registration exists, no silent failure when bootstrap errors).
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1; then
-    echo "error: launchd bootstrap failed for $LABEL" >&2
-    return 1
-  fi
+  # bootout is async — an immediate re-bootstrap races it ("Input/output
+  # error"). Wait for the port to actually free first.
+  for _ in $(seq 1 15); do
+    if ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  local attempt=1
+  while [ $attempt -le 3 ]; do
+    if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1; then break; fi
+    if [ $attempt -eq 3 ]; then
+      echo "error: launchd bootstrap failed for $LABEL after 3 attempts" >&2
+      return 1
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
   if ! launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running"; then
     echo "warning: $LABEL bootstrapped but not running yet — check ~/.cache/qmd/mlx-daemon.log" >&2
   fi

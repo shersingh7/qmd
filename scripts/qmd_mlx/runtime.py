@@ -191,6 +191,20 @@ class MLXEmbeddingRuntime:
                     f"  encoder error: {e_enc}"
                 )
 
+        # Tune the micro-batch budget to the loaded model's actual size
+        # (prevents quadratic-attention timeouts/OOM on large models).
+        try:
+            cfg = getattr(self.model, "args", getattr(self.model, "config", None))
+            hidden = int(getattr(cfg, "hidden_size", 0) or 0)
+            layers = int(getattr(cfg, "num_hidden_layers", 0) or 0)
+            vocab = int(getattr(cfg, "vocab_size", 0) or 0)
+            if hidden > 0 and layers > 0:
+                params_b = (layers * 12 * hidden * hidden + vocab * hidden) / 1e9
+                budget = self.batch_planner.tune_for_model(params_b)
+                print(f"[mlx-runtime] Model ~{params_b:.1f}B params → micro-batch budget {budget} tokens")
+        except Exception as exc:
+            print(f"[mlx-runtime] Model-size auto-tune skipped: {exc}")
+
         self.model_memory_mb = max(0.0, self._get_active_memory_mb() - mem_before)
         self._update_peak_memory()
         elapsed = time.time() - t0

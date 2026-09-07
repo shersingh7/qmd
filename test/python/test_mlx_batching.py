@@ -22,6 +22,29 @@ class MockTokenizer:
         return [1] * max(1, len(text.split()))
 
 
+def test_budget_scales_down_with_model_size():
+    """A 4B-class model must get a much smaller micro-batch budget than a
+    0.6B model on the same machine (quadratic attention). Regression test
+    for production batch timeouts on large models."""
+    small = calculate_default_max_batch_tokens(model_params_b=0.6)
+    large = calculate_default_max_batch_tokens(model_params_b=4.0)
+    assert large < small
+    assert large >= 1024
+    # Explicit operator budget always wins.
+    assert calculate_default_max_batch_tokens(custom_budget=9999) == 9999
+    # Unknown size degrades to the unscaled default, never crashes.
+    assert calculate_default_max_batch_tokens(model_params_b=0) == small
+
+
+def test_planner_tune_for_model_respects_explicit_budget():
+    p = BatchPlanner(max_batch_tokens=8192)
+    assert p.tune_for_model(8.0) == 8192
+    q = BatchPlanner()
+    auto = q.max_batch_tokens
+    tuned = q.tune_for_model(4.0)
+    assert tuned < auto
+
+
 def mock_embed_fn(texts: list[str]) -> np.ndarray:
     dims = 4
     # Unique embedding based on text length and content hash

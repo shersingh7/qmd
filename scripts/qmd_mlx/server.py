@@ -196,6 +196,16 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(texts, list):
                 self._send_json({"error": "'texts' must be a list of strings"}, 400)
                 return
+            if len(texts) > 512:
+                self._send_json({"error": f"'texts' exceeds per-request limit of 512 (got {len(texts)})"}, 400)
+                return
+            for i, t in enumerate(texts):
+                if not isinstance(t, str):
+                    self._send_json({"error": f"texts[{i}] is not a string"}, 400)
+                    return
+                if len(t) > 256 * 1024:
+                    self._send_json({"error": f"texts[{i}] exceeds 256KB"}, 400)
+                    return
             tokens = self.runtime.tokenize(texts)
             counts = [len(t) for t in tokens]
             self._send_json({"tokens": tokens, "counts": counts}, 200)

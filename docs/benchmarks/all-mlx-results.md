@@ -128,6 +128,48 @@ comparing a 4B MLX against the 0.6B GGUF — never a same-model race.
 
 ### /generate 60 tokens ≈ 2.6 s (expansion path, opt-in only)
 
+## Production-chunk throughput (Sep 7 2026 — the measurement that killed the install)
+
+Short-text benchmarks do NOT predict production. On real ~784-token chunks:
+
+| Backend | s/text (784 tok) | Full 142k re-embed |
+|---|---|---|
+| GGUF Qwen3-0.6B-Q8_0 (live) | **0.155** | ~6 h |
+| MLX Qwen3-0.6B-8bit | 0.16 | ~6 h |
+| MLX Qwen3-4B-affine-4bit | **1.94** | **~77 h** |
+
+The MLX speed story evaporates at production chunk sizes (naive quadratic
+attention, no flash attention; llama.cpp Metal is years more optimized).
+MLX 0.6B == GGUF 0.6B exactly. Only the 4B differs — on quality (+12 recall),
+never on speed.
+
+## Install attempt post-mortem (Sep 7 2026, EOD)
+
+Attempted: fork dist live + `qmd embed -f` onto MLX 4B. Hit, in order:
+1. `getStore()` never passed `models.embedBackend` — config flip silently
+   ignored; daemon counter proved zero MLX traffic. Fixed (now mirrors
+   createStore) + status resolves backend YAML > env > default.
+2. First `-f` batches timed out: micro-batch budget (16k tokens, tuned for
+   0.6B) is quadratic-hostile on 4B. Fixed with model-size-scaled budgets
+   + `tune_for_model()` from live weight shapes.
+3. Killed the run: fallback storm would have taken days.
+4. Incremental `qmd embed` then refused with dimension mismatch — exposed a
+   fork bug: GGUF `getDescriptor()` hardcoded 768d vs the real 1024d. The
+   contract system worked as designed (refused to mix); the descriptor lied.
+   Fixed: GGUF returns null → first-chunk probe, exactly like upstream.
+5. Remeasured on production chunks → 77 h re-embed. **Rolled back**: live
+   dist restored to pristine upstream 2.5.3 + stock patches, index restored
+   from backup, backend reverted, MLX supervision removed. System verified
+   healthy (search/vsearch/incremental embed all green).
+6. Lesson for next time: NEVER `embed -f` on the live DB for a space
+   migration. Shadow DB + swap. The contract system + backups made every
+   mistake recoverable — that part of the design paid off.
+
+Standing recommendation: GGUF live. MLX 4B embed lives on as a shadow-trial
+option (resumable background build, zero downtime) IF the +12 recall points
+matter enough to warrant it. Rerank/expansion stay GGUF regardless
+(measured wins on both quality and latency).
+
 ## End-to-end verification (TS → daemon, this session)
 
 - `LlamaCpp.rerank()` via MLX: correct contract (file/score/index, sorted), 0.90

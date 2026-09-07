@@ -170,7 +170,7 @@ export interface ILLMSession {
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
   expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
-  getDescriptor?(): Promise<EmbeddingDescriptor>;
+  getDescriptor?(): Promise<EmbeddingDescriptor | null>;
   /** Whether this session is still valid (not released or aborted) */
   readonly isValid: boolean;
   /** Abort signal for this session (aborts on release or maxDuration) */
@@ -578,21 +578,17 @@ export class LlamaCpp implements LLM {
     return `mlx:${sub}`;
   }
 
-  async getDescriptor(): Promise<EmbeddingDescriptor> {
+  async getDescriptor(): Promise<EmbeddingDescriptor | null> {
     if (this.embedBackend === 'mlx' && !this.mlxFailed) {
       await this._ensureMlxClient();
       if (this.mlxDescriptor) return this.mlxDescriptor;
+      return null;
     }
-    return {
-      version: 1,
-      backend: "gguf",
-      model: this.embedModelUri,
-      pooling: "mean",
-      nativeDimensions: 768,
-      outputDimensions: 768,
-      maxTokens: 2048,
-      normalized: true,
-    };
+    // GGUF: dims are only knowable after loading the model weights — a
+    // hardcoded guess here once poisoned the contract check (768 vs the real
+    // 1024) and blocked incremental embeds. Return null so callers fall back
+    // to the first-chunk probe, exactly like upstream.
+    return null;
   }
 
   /**
@@ -1886,7 +1882,7 @@ class LLMSession implements ILLMSession {
     return this.withOperation(() => this.manager.getLlamaCpp().rerank(query, documents, options));
   }
 
-  async getDescriptor(): Promise<EmbeddingDescriptor> {
+  async getDescriptor(): Promise<EmbeddingDescriptor | null> {
     return this.withOperation(() => this.manager.getLlamaCpp().getDescriptor());
   }
 }

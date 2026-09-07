@@ -28,25 +28,35 @@ def get_system_ram_gb() -> float:
         return 16.0  # Safe default
 
 
-def calculate_default_max_batch_tokens(custom_budget: int = 0) -> int:
+def calculate_default_max_batch_tokens(custom_budget: int = 0, model_params_b: float = 0.6) -> int:
     """
-    Calculates safe GPU token budget based on physical system RAM.
-    Leaves ample headroom for macOS system services and UI.
+    Calculates safe GPU token budget based on physical system RAM and model
+    size. Attention is quadratic in sequence length AND linear in model
+    width — a budget tuned for a 0.6B model will time out (or OOM) on a 4B
+    model running the same token count. Scale the RAM tier by
+    (0.6B / params) so larger models get proportionally smaller micro-batches.
     """
     if custom_budget > 0:
         return max(512, min(custom_budget, 65536))
 
     ram_gb = get_system_ram_gb()
     if ram_gb <= 8.5:
-        return 4096
+        base = 4096
     elif ram_gb <= 16.5:
-        return 8192
+        base = 8192
     elif ram_gb <= 24.5:
-        return 12288
+        base = 12288
     elif ram_gb <= 36.5:
-        return 16384
+        base = 16384
     else:
-        return 32768
+        base = 32768
+
+    try:
+        scale = 0.6 / float(model_params_b or 0.6)
+    except (TypeError, ValueError):
+        scale = 1.0
+    scale = min(1.0, max(0.1, scale))
+    return max(1024, int(base * scale))
 
 
 class BatchPlanner:
@@ -55,8 +65,21 @@ class BatchPlanner:
     to minimize padding waste, and exact order restoration.
     """
 
-    def __init__(self, max_batch_tokens: Optional[int] = None):
-        self.max_batch_tokens = max_batch_tokens or calculate_default_max_batch_tokens()
+    def __init__(self, max_batch_tokens: Optional[int] = None, model_params_b: float = 0.6):
+        self._explicit_budget = max_batch_tokens or 0
+        self.max_batch_tokens = max_batch_tokens or calculate_default_max_batch_tokens(
+            model_params_b=model_params_b
+        )
+
+    def tune_for_model(self, model_params_b: float) -> int:
+        """Re-scale the token budget once the loaded model's size is known.
+        No-op when the operator set an explicit --max-batch-tokens."""
+        if self._explicit_budget > 0:
+            return self.max_batch_tokens
+        self.max_batch_tokens = calculate_default_max_batch_tokens(
+            model_params_b=model_params_b
+        )
+        return self.max_batch_tokens
 
     def plan_and_execute(
         self,

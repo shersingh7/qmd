@@ -98,6 +98,7 @@ QMD_EMBED_BACKEND=mlx qmd status   # includes an MLX Daemon section (embed/reran
 | `QMD_MLX_EXPAND` | unset (GGUF) | Set to `1` to route query expansion through the MLX daemon (opt-in pending Recall@10 eval) |
 | `QMD_MLX_RERANK_FALLBACK` / `QMD_MLX_EXPAND_FALLBACK` | `1` | Set to `0` for fail-closed (error instead of GGUF fallback) |
 | `MLX_RERANK_MODEL` / `MLX_GENERATE_MODEL` | unset | Daemon-side model selection (also `--rerank-model` / `--generate-model`) |
+| `MLX_IDLE_UNLOAD_S` | `300` | Seconds of inactivity before the daemon unloads model weights (frees GPU/unified memory; next request reloads in ~1s). `0` = always-on |
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
 
 `llm_cache` keys are namespaced by serving backend (`mlx:<daemon-model>` vs the

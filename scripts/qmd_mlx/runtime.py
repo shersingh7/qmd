@@ -56,6 +56,14 @@ class MLXEmbeddingRuntime:
             max_batch_tokens=max_batch_tokens if max_batch_tokens > 0 else None
         )
 
+        # Idle unload: same policy as the GGUF in-process path — drop model
+        # weights after N seconds with no work, reload transparently on the
+        # next request (pays a one-time reload cost, frees GPU memory).
+        # 0 disables (always-on).
+        self.idle_unload_s = float(os.getenv("MLX_IDLE_UNLOAD_S", "300"))
+        self._last_active = time.time()
+        self._weights_loaded = True
+
         self.model: Any = None
         self.tokenizer: Any = None
         self.raw_hf_tokenizer: Any = None
@@ -203,7 +211,15 @@ class MLXEmbeddingRuntime:
         self._ready_event.set()
 
         while True:
-            job = self._work_queue.get()
+            # Idle unload: when the queue is empty past the deadline, drop the
+            # weights (Unified memory is reclaimed); reload on the next job.
+            try:
+                job = self._work_queue.get(timeout=1.0)
+            except queue.Empty:
+                if (self._weights_loaded and self.idle_unload_s > 0
+                        and time.time() - self._last_active > self.idle_unload_s):
+                    self._unload_weights()
+                continue
             if job is None:
                 break
             texts, requested_dims, is_query, response_future, cancel_event = job
@@ -213,6 +229,10 @@ class MLXEmbeddingRuntime:
                 self._work_queue.task_done()
                 continue
 
+            if not self._weights_loaded:
+                self._reload_weights()
+
+            self._last_active = time.time()
             t0 = time.time()
             try:
                 # Length-aware micro-batching (never one giant forward pass).
@@ -304,6 +324,38 @@ class MLXEmbeddingRuntime:
         del normalized, pooled, pooled_f32, hidden_states, input_ids, attention_mask
         return result_np
 
+    def _unload_weights(self):
+        """Drops model weights from GPU/unified memory (idle policy).
+
+        Runs ON the owner thread (safe — no concurrent forward pass possible).
+        Keeps tokenizer state in RAM (a few hundred MB saved vs the weights).
+        """
+        if self.model is None:
+            return
+        try:
+            del self.model
+            self.model = None
+            mx.clear_cache()
+            self._weights_loaded = False
+            print(
+                f"[mlx-runtime] Idle {self.idle_unload_s:.0f}s — weights unloaded "
+                f"({self._get_active_memory_mb():.0f}MB active Metal)"
+            )
+        except Exception as exc:
+            print(f"[mlx-runtime] Idle unload failed (will retry): {exc}", file=sys.stderr)
+
+    def _reload_weights(self):
+        """Reloads weights on the owner thread after an idle unload."""
+        print("[mlx-runtime] Reloading weights after idle unload...")
+        t0 = time.time()
+        try:
+            self._load_on_worker()
+            self._weights_loaded = True
+            print(f"[mlx-runtime] Reloaded in {time.time() - t0:.2f}s")
+        except Exception as exc:
+            self._init_error = exc
+            raise MLXRuntimeError(f"Failed to reload model after idle unload: {exc}")
+
     def warmup(self):
         """Runs warmup inference passes via the execution owner thread."""
         print("[mlx-runtime] Running GPU warmup...")
@@ -380,6 +432,8 @@ class MLXEmbeddingRuntime:
             "avg_ms": avg_ms,
             "compiled_shapes": len(self.compiled_shapes),
             "uptime_sec": round(uptime, 1),
+            "weights_loaded": self._weights_loaded,
+            "idle_unload_s": self.idle_unload_s,
         }
 
     def shutdown(self):

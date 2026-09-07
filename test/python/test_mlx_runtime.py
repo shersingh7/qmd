@@ -21,6 +21,28 @@ def mlx_runtime():
     runtime.shutdown()
 
 
+def test_idle_unload_and_transparent_reload(mlx_runtime):
+    """Idle policy: weights unload after the deadline, reload transparently,
+    and embeddings are IDENTICAL before/after the cycle."""
+    rt = mlx_runtime
+    rt.idle_unload_s = 1.0  # test-fast deadline
+    before = rt.embed_direct(["idle unload verification text"])[0]
+
+    # Force the idle path: wait past the deadline with an empty queue.
+    import time as _t
+    _t.sleep(1.5)
+    rt._work_queue.join()  # let the worker observe idleness
+    deadline = _t.time() + 5
+    while rt._weights_loaded and _t.time() < deadline:
+        _t.sleep(0.2)
+    assert not rt._weights_loaded, "weights should unload after idle deadline"
+
+    after = rt.embed_direct(["idle unload verification text"])[0]
+    assert rt._weights_loaded, "weights should reload on demand"
+    np.testing.assert_allclose(before, after, atol=1e-6)
+    rt.idle_unload_s = 0  # disable for the rest of the module
+
+
 def test_runtime_initialization(mlx_runtime):
     assert mlx_runtime.native_dims == 384
     assert mlx_runtime.model_name == "sentence-transformers/all-MiniLM-L6-v2"

@@ -144,7 +144,7 @@ class MLXRerankAdapter:
         self,
         query: str,
         documents: list[str],
-        batch_size: int = 4,
+        batch_size: int = 1,
         timeout_s: float | None = 100.0,
     ) -> list[float]:
         """
@@ -156,6 +156,11 @@ class MLXRerankAdapter:
         single-pair scoring). `timeout_s` bounds total wall-clock time; on
         expiry raises RerankError instead of hanging the HTTP worker past the
         client's deadline. None disables the deadline (tests only).
+
+        batch_size default is 1: measured on M2 Pro (Sep 2026), rerank prompts
+        are long and variable-length, so padding waste cancels batching gains
+        entirely (0.4 pairs/s at batch 1, 4, and 8). The parameter stays for
+        uniform-length workloads where it may help.
         """
         if not isinstance(query, str) or not query.strip():
             raise RerankError("Query must be a non-empty string.")

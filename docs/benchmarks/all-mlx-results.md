@@ -101,13 +101,16 @@ the only place the 4B's speed actually bites, and it's a one-time cost.
 | Model | Batch 1 | Batch 8 | Batch 32 | Metal resident |
 |---|---|---|---|---|
 | MLX Qwen3-Embedding-**0.6B-8bit** | 18 ms (55 t/s) | 50 ms (161 t/s) | 158 ms (**203 t/s**) | 604 MB |
-| MLX Qwen3-Embedding-**4B-4bit-DWQ** | 112 ms (8.9 t/s) | 468 ms (17 t/s) | 1715 ms (18.7 t/s) | 2159 MB |
-| GGUF Qwen3-Embedding-0.6B-Q8_0 (live baseline, `timing-gguf-baseline`) | — | — | 930 ms (**34.4 t/s**) | ~700 MB |
+| MLX Qwen3-Embedding-**4B-affine-4bit** (local convert) | — | 401 ms (20 t/s) | 1449 ms (**22.1 t/s**) | 2159 MB |
+| MLX Qwen3-Embedding-4B-4bit-DWQ (community) | 112 ms (8.9 t/s) | 468 ms (17 t/s) | 1715 ms (18.7 t/s) | 2159 MB |
+| GGUF Qwen3-Embedding-0.6B-Q8_0 (live baseline) | — | — | 930 ms (34.4 t/s) | ~700 MB |
+| GGUF Qwen3-Embedding-**4B** Q4_K_M (official, same-model test) | — | — | 3224 ms (**9.9 t/s**) | ~2.4 GB |
 
-- The 0.6B-8bit MLX embed is **~6× the GGUF baseline** on the same batch-32 workload.
-- The 4B embed is ~2× *slower* than the GGUF 0.6B per text (bigger model, 2560d)
-  — but it is a quality upgrade, not a speed play. The earlier "~2,990 texts/s"
-  claim was a 384-d MiniLM benchmark, not Qwen3-4B; corrected here.
+**Same-model, same-batch truth (4B Q4-class, batch 32): MLX affine-4bit is
+2.2× faster than GGUF Q4_K_M (22.1 vs 9.9 texts/s).** At the 0.6B size class,
+MLX-8bit is 6× faster than the live GGUF baseline (203 vs 34.4 texts/s).
+Earlier confusion resolved: the "4B slower than GGUF" impression came from
+comparing a 4B MLX against the 0.6B GGUF — never a same-model race.
 - JSON vs binary wire: negligible at these batch sizes (both <3% deltas).
 
 ### Rerank latency (fresh, warm)
@@ -118,8 +121,10 @@ the only place the 4B's speed actually bites, and it's a one-time cost.
 | MLX 4B local 4-bit (micro-batched, batch_size=4) | ~3-4 s est | ~6-8 s est |
 
 - GGUF rerank stays default (also wins on accuracy: 80% vs 68-72%).
-- Full 150-pair parity eval: 381 s ≈ 0.39 pairs/s single-pair; micro-batching
-  (now default in the adapter) cuts wall-clock ~3-4× at equal rank order.
+- Full 150-pair parity eval: 381 s ≈ 0.39 pairs/s single-pair. Micro-batching
+  gave ZERO measured speedup on variable-length prompts (0.4 pairs/s at batch
+  1/4/8 — padding cancels gains); default reverted to 1, param kept for
+  uniform-length workloads.
 
 ### /generate 60 tokens ≈ 2.6 s (expansion path, opt-in only)
 

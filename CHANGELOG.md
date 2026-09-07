@@ -22,7 +22,7 @@
 - Fixed unvalidated fallback from MLX to GGUF that silently substituted embedding spaces; MLX backend selection is now fail-closed by default.
 - Fixed duplicate embedding of chunk 0 during dimension probing in `generateEmbeddings`.
 - Fixed MLX chunking token counts: the chunker used word-split estimates under the MLX backend (undercounting code/CJK, risking silent daemon-side truncation); it now uses one batched daemon `/tokenize` call with local fallback.
-- Fixed unbounded rerank latency: micro-batched scoring (default 4 pairs/forward, rank-identical to single-pair) plus a 100s server-side deadline returning 503 instead of hanging past the client timeout.
+- Fixed unbounded rerank latency: 100s server-side deadline returning 503 instead of hanging past the client timeout. (Micro-batching exists as an opt-in `batch_size` param but defaults to 1 — measured zero speedup on variable-length rerank prompts, Sep 2026.)
 - Fixed bfloat16→NumPy crash in batched rerank scoring (no PEP 3118 format for bf16; cast to float32 first).
 - Fixed misleading `qmd status` Models section (showed GGUF URIs while MLX served); now defers to the live daemon report.
 - Deprecated no-op `mlxDtype` (daemon serves pre-quantized weights; precision comes from the model repo).

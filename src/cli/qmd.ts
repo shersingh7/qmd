@@ -119,10 +119,17 @@ function getStore(): ReturnType<typeof createStore> {
       const config = loadConfig();
       syncConfigToDb(store.db, config);
       if (config.models) {
+        // Mirror createStore (src/index.ts): the backend MUST come from the
+        // YAML config or the CLI silently ignores `models.embedBackend`
+        // (this exact omission shipped MLX config that never took effect).
         setDefaultLlamaCpp(new LlamaCpp({
           embedModel: config.models.embed,
           generateModel: config.models.generate,
           rerankModel: config.models.rerank,
+          embedBackend: config.models.embedBackend,
+          mlxUrl: config.models.mlxUrl,
+          mlxFallback: config.models.mlxFallback,
+          mlxConcurrency: config.models.mlxConcurrency,
         }));
       }
     } catch {
@@ -333,6 +340,18 @@ async function showStatus(): Promise<void> {
   // Most recent update across all collections
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
 
+  // Effective embed backend, resolved exactly like LlamaCpp: YAML config >
+  // env > gguf default. (An env-only check here once shipped a status page
+  // that disagreed with the backend queries actually used.)
+  let mlxOn = (process.env.QMD_EMBED_BACKEND || "").trim().toLowerCase() === "mlx";
+  try {
+    const cfg = loadConfig() as unknown as { models?: { embedBackend?: string } };
+    const fileBackend = (cfg.models?.embedBackend || "").trim().toLowerCase();
+    if (fileBackend === "mlx" || fileBackend === "gguf") mlxOn = fileBackend === "mlx";
+  } catch {
+    // Config may not exist — env/default stands.
+  }
+
   console.log(`${c.bold}QMD Status${c.reset}\n`);
   console.log(`Index: ${dbPath}`);
   console.log(`Size:  ${formatBytes(indexSize)}`);
@@ -454,10 +473,9 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
-    // These URIs are the GGUF defaults. Under QMD_EMBED_BACKEND=mlx the live
+    // These URIs are the GGUF defaults. Under the MLX backend the live
     // models come from the daemon — the MLX Daemon section below reports them.
     const mlxNote = ` ${c.dim}(see MLX Daemon below)${c.reset}`;
-    const mlxOn = (process.env.QMD_EMBED_BACKEND || "").trim().toLowerCase() === "mlx";
     console.log(`\n${c.bold}Models${c.reset}`);
     console.log(`  Embedding:   ${mlxOn ? `MLX daemon${mlxNote}` : hfLink(DEFAULT_EMBED_MODEL_URI)}`);
     console.log(`  Reranking:   ${mlxOn && process.env.QMD_MLX_RERANK === "1" ? `MLX daemon${mlxNote}` : hfLink(DEFAULT_RERANK_MODEL_URI)}`);
@@ -465,7 +483,7 @@ async function showStatus(): Promise<void> {
   }
 
   // MLX daemon health (only when MLX backend selected; never fails status)
-  if ((process.env.QMD_EMBED_BACKEND || "").trim().toLowerCase() === "mlx") {
+  if (mlxOn) {
     console.log(`\n${c.bold}MLX Daemon${c.reset}`);
     try {
       const { mlxHealth } = await import("../mlx.js");

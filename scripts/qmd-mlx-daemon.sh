@@ -16,9 +16,17 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT="${MLX_PORT:-8787}"
 VENV_PY="$REPO/.venv/bin/python"
 
-EMBED_MODEL="${MLX_EMBED_MODEL:-mlx-community/Qwen3-Embedding-4B-4bit-DWQ}"
-RERANK_MODEL="${MLX_RERANK_MODEL:-$HOME/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit}"
-GENERATE_MODEL="${MLX_GENERATE_MODEL:-mlx-community/Qwen3-1.7B-4bit}"
+# Production = embed-only daemon. Rerank/expansion stay in-process GGUF
+# (measured: GGUF ranks hard queries better). Set MLX_RERANK_MODEL /
+# MLX_GENERATE_MODEL explicitly to opt into those adapters; there is
+# deliberately no default (an idle-unload story for those adapters does not
+# exist yet — see docs/benchmarks/all-mlx-results.md).
+# Default: local affine 4-bit build (scripts/convert-qwen3-embedding-4b.sh) —
+# measured better recall (84% vs 80%) AND faster kernels (22.1 vs 18.7 t/s)
+# than the community DWQ build. Override with MLX_EMBED_MODEL.
+EMBED_MODEL="${MLX_EMBED_MODEL:-$HOME/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine}"
+RERANK_MODEL="${MLX_RERANK_MODEL:-}"
+GENERATE_MODEL="${MLX_GENERATE_MODEL:-}"
 
 cmd_run() {
   # Foreground exec — launchd supervises the process directly.
@@ -37,7 +45,16 @@ cmd_start() {
   fi
   mkdir -p "$HOME/Library/LaunchAgents"
   sed -e "s|__REPO__|$REPO|g" "$REPO/scripts/launchd/com.qmd.mlxd.plist" > "$PLIST"
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$LABEL"
+  # Bootout first: makes start idempotent (no silent no-op when a stale
+  # registration exists, no silent failure when bootstrap errors).
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1; then
+    echo "error: launchd bootstrap failed for $LABEL" >&2
+    return 1
+  fi
+  if ! launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running"; then
+    echo "warning: $LABEL bootstrapped but not running yet — check ~/.cache/qmd/mlx-daemon.log" >&2
+  fi
   echo "started $LABEL (port $PORT)"
 }
 

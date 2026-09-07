@@ -1632,7 +1632,7 @@ export async function generateEmbeddings(
     }
 
     return { chunksEmbedded, errors };
-  }, { maxDuration: 30 * 60 * 1000, name: 'generateEmbeddings' });
+  }, { maxDuration: 120 * 60 * 1000, name: 'generateEmbeddings' });
 
   return {
     docsProcessed: totalDocs,

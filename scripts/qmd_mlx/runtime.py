@@ -394,7 +394,9 @@ class MLXEmbeddingRuntime:
         texts: list[str],
         requested_dims: Optional[int] = None,
         is_query: bool = False,
-        timeout: float = 60.0,
+        # 300s to match the TS client ceiling (bulk batches on large models
+        # legitimately take minutes; see DEFAULT_TIMEOUT_MS in src/mlx.ts).
+        timeout: float = 300.0,
         cancel_event: Optional[threading.Event] = None,
     ) -> np.ndarray:
         """Submits an embedding task to the execution owner thread."""

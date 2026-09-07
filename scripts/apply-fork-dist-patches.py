@@ -26,8 +26,8 @@ PATCH_DIR = Path.home() / ".hermes/scripts/qmd-patches"
 
 
 def replace_once(text: str, old: str, new: str, where: str) -> str:
-    if new in text and old not in text:
-        return text  # already applied
+    if new in text:
+        return text  # already at target value (e.g. baked into fork source)
     if old not in text:
         raise SystemExit(f"PATCH ANCHOR MISSING in {where}: {old[:70]!r}")
     return text.replace(old, new, 1)

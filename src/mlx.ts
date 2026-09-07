@@ -58,7 +58,10 @@ export interface MlxStats {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_URL = process.env.QMD_MLX_EMBED_URL || "http://127.0.0.1:8787";
-const DEFAULT_TIMEOUT_MS = 60_000; // 60s for large batch processing
+// 300s ceiling for bulk batches on large models (a 32-chunk 4B batch can
+// legitimately take ~2 min; fast calls are unaffected — deadline, not target).
+// Must stay >= the server submit_embed timeout.
+const DEFAULT_TIMEOUT_MS = 300_000;
 const BINARY_THRESHOLD = 16;       // switch to binary protocol above or equal to this batch size
 
 function url(config?: MlxEmbedConfig): string {

@@ -70,6 +70,30 @@ sigmoid(≈0)) — correlating a strongly-discriminating ranker against a
 near-flat one measures baseline saturation, not quality. Ground-truth accuracy
 is the honest gate; it is what `ground_truth_accuracy.json` records.
 
+## Embedding retrieval quality (labeled eval, Sep 7 2026 — supersedes earlier advice)
+
+`scripts/embedding_recall_eval.py` — top-1 recall on the 25 labeled
+deep-research queries, cosine similarity, in-memory index over eval-docs:
+
+| Embedding model | Recall@1 | Notes |
+|---|---|---|
+| MLX **Qwen3-Embedding-4B affine 4-bit** (local convert of official HF) | **21/25 = 84%** | Best. Also faster than DWQ (22.1 vs 18.7 texts/s batch-32) |
+| MLX Qwen3-Embedding-4B-4bit-DWQ (mlx-community) | 20/25 = 80% | |
+| MLX Qwen3-Embedding-0.6B-8bit | 18/25 = 72% | |
+| (GGUF 0.6B-Q8 rerank pipeline reference: rerank ground truth) | 20/25 = 80% | different stage — not directly comparable |
+
+**Correction to earlier advice:** the 0.6B is NOT "good enough" — the 4B
+retrieves meaningfully better (+12 pts over 0.6B, +4 pts over the DWQ build).
+The official Qwen checkpoint ships backbone-only weights (no `model.` prefix),
+which is why mlx-community had to hand-roll the DWQ conversion; converting
+locally after remapping the weight names yields both better quality AND
+faster kernels than the community DWQ build.
+
+**Cost side:** 4B = 22 texts/s batch-32, 2.1 GB resident. For David's ~136k
+chunks: ~1.7 h full re-embed (vs ~12 min at 0.6B-8bit's 203 t/s). Nightly
+incremental embeds are seconds-to-minutes either way — the full re-embed is
+the only place the 4B's speed actually bites, and it's a one-time cost.
+
 ## Latency + throughput measured this session (M2 Pro, warm)
 
 ### Embedding throughput (fresh `bench_mlx.py` runs, Sep 7 2026)

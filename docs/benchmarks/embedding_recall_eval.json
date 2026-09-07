@@ -1,0 +1,563 @@
+[
+  {
+    "label": "mlx-0.6B-8bit",
+    "model": "mlx-community/Qwen3-Embedding-0.6B-8bit",
+    "top1_recall": 0.72,
+    "hits": 18,
+    "n": 25,
+    "load_s": 2.77,
+    "index_s": 1.09,
+    "query_s": 0.33,
+    "per_query": [
+      {
+        "query": "that tradeoff between data correctness a",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what we learned from the dashboard thing",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how much we're burning through each mont",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "when do I need to be online",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "that algorithm for getting nodes to agre",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "why we pushed back the release date",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how to structure URLs for our service",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "preventing the model from just memorizin",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "who we're pitching to first",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "can I work from another country",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "how the beta users found problems",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "that thing Leslie Lamport invented",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what happens when the network splits",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "teaching computers to find patterns",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "how much runway before we're out of cash",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "the 47 issues we found before shipping",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "grouping customers by behavior",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "product-launch-retrospective",
+        "hit": false
+      },
+      {
+        "query": "why URLs should be things not actions",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "what Eric Brewer proved you can't have",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "how fast the new feature loaded",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "days everyone needs to be in the office",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "the number that shows customers are expa",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "product-launch-retrospective",
+        "hit": false
+      },
+      {
+        "query": "telling spam from real email",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "api-design-principles",
+        "hit": false
+      },
+      {
+        "query": "how to get user 123's purchases",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "product-launch-retrospective",
+        "hit": false
+      },
+      {
+        "query": "zookeeper etcd consul what they have in ",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      }
+    ]
+  },
+  {
+    "label": "mlx-4B-affine-4bit",
+    "model": "/Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine",
+    "top1_recall": 0.84,
+    "hits": 21,
+    "n": 25,
+    "load_s": 0.61,
+    "index_s": 11.064,
+    "query_s": 2.31,
+    "per_query": [
+      {
+        "query": "that tradeoff between data correctness a",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what we learned from the dashboard thing",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how much we're burning through each mont",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "when do I need to be online",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "that algorithm for getting nodes to agre",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "why we pushed back the release date",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how to structure URLs for our service",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "preventing the model from just memorizin",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "who we're pitching to first",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "can I work from another country",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "how the beta users found problems",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "that thing Leslie Lamport invented",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what happens when the network splits",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "teaching computers to find patterns",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "how much runway before we're out of cash",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "the 47 issues we found before shipping",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "grouping customers by behavior",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "why URLs should be things not actions",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "what Eric Brewer proved you can't have",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "how fast the new feature loaded",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "days everyone needs to be in the office",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "the number that shows customers are expa",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "telling spam from real email",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "how to get user 123's purchases",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "zookeeper etcd consul what they have in ",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      }
+    ]
+  },
+  {
+    "label": "mlx-4B-DWQ",
+    "model": "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
+    "top1_recall": 0.8,
+    "hits": 20,
+    "n": 25,
+    "load_s": 1.2,
+    "index_s": 11.063,
+    "query_s": 2.32,
+    "per_query": [
+      {
+        "query": "that tradeoff between data correctness a",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what we learned from the dashboard thing",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how much we're burning through each mont",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "product-launch-retrospective",
+        "hit": false
+      },
+      {
+        "query": "when do I need to be online",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "that algorithm for getting nodes to agre",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "why we pushed back the release date",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "how to structure URLs for our service",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "preventing the model from just memorizin",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "who we're pitching to first",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "can I work from another country",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "how the beta users found problems",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "that thing Leslie Lamport invented",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "what happens when the network splits",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "teaching computers to find patterns",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "how much runway before we're out of cash",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "the 47 issues we found before shipping",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "grouping customers by behavior",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "product-launch-retrospective",
+        "hit": false
+      },
+      {
+        "query": "why URLs should be things not actions",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "what Eric Brewer proved you can't have",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      },
+      {
+        "query": "how fast the new feature loaded",
+        "difficulty": "hard",
+        "expected": "product-launch",
+        "top1": "product-launch-retrospective",
+        "hit": true
+      },
+      {
+        "query": "days everyone needs to be in the office",
+        "difficulty": "hard",
+        "expected": "remote-work",
+        "top1": "remote-work-policy",
+        "hit": true
+      },
+      {
+        "query": "the number that shows customers are expa",
+        "difficulty": "hard",
+        "expected": "fundraising",
+        "top1": "startup-fundraising-memo",
+        "hit": false
+      },
+      {
+        "query": "telling spam from real email",
+        "difficulty": "hard",
+        "expected": "machine-learning",
+        "top1": "machine-learning-primer",
+        "hit": true
+      },
+      {
+        "query": "how to get user 123's purchases",
+        "difficulty": "hard",
+        "expected": "api-design",
+        "top1": "api-design-principles",
+        "hit": true
+      },
+      {
+        "query": "zookeeper etcd consul what they have in ",
+        "difficulty": "hard",
+        "expected": "distributed-systems",
+        "top1": "distributed-systems-overview",
+        "hit": true
+      }
+    ]
+  }
+]

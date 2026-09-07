@@ -5,8 +5,8 @@
     "top1_recall": 0.72,
     "hits": 18,
     "n": 25,
-    "load_s": 3.2,
-    "index_s": 1.09,
+    "load_s": 3.29,
+    "index_s": 1.088,
     "query_s": 0.33,
     "per_query": [
       {
@@ -192,7 +192,7 @@
     "top1_recall": 0.84,
     "hits": 21,
     "n": 25,
-    "load_s": 1.19,
+    "load_s": 1.2,
     "index_s": 11.059,
     "query_s": 2.31,
     "per_query": [
@@ -379,8 +379,8 @@
     "top1_recall": 0.8,
     "hits": 20,
     "n": 25,
-    "load_s": 1.2,
-    "index_s": 11.068,
+    "load_s": 1.27,
+    "index_s": 11.06,
     "query_s": 2.31,
     "per_query": [
       {

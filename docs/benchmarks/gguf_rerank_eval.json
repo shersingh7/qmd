@@ -1,0 +1,652 @@
+{
+  "that tradeoff between data correctness and always being up": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.7294625793104836
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5005573396940197
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5002167071371153
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000632762963766
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000190823829961
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000167692014593
+    }
+  ],
+  "what we learned from the dashboard thing": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.7247448727458466
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5003163119705308
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5001826871949211
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5001416460689448
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5001173152610435
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000494904341597
+    }
+  ],
+  "how much we're burning through each month": [
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5972059446668547
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5001421024315217
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000227928103256
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.500009857705662
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000056119783947
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000031311603834
+    }
+  ],
+  "when do I need to be online": [
+    {
+      "file": "remote-work-policy",
+      "score": 0.7266315980465224
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5004889078742739
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5004635089553752
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5002712045995908
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000648544370052
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.500058918641753
+    }
+  ],
+  "that algorithm for getting nodes to agree": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.727030889244137
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000749872482464
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.500016715031955
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000154570698165
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000143984097991
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000064441605897
+    }
+  ],
+  "why we pushed back the release date": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.6025443059272324
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5050815554622776
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.500057033870442
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000356970085097
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000165561086699
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000079743185772
+    }
+  ],
+  "how to structure URLs for our service": [
+    {
+      "file": "api-design-principles",
+      "score": 0.7305475353999532
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5071653446661397
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5026623413274022
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5004289951869002
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000308500820728
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000183650627068
+    }
+  ],
+  "preventing the model from just memorizing": [
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5458163182906529
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5001285844890692
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000603249752005
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000535784490917
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000137048582439
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000046434611248
+    }
+  ],
+  "who we're pitching to first": [
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.7195642453869445
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5002206946667153
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5001656691832378
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000395609567105
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000384771700888
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000087305088519
+    }
+  ],
+  "can I work from another country": [
+    {
+      "file": "remote-work-policy",
+      "score": 0.7294850927075675
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000208086803348
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.500007155682851
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000063866150409
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000063004167711
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000029627226468
+    }
+  ],
+  "how the beta users found problems": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.7108929786085638
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5002336622685992
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5001179742663161
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.500020596360616
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.50001567769686
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000037984193568
+    }
+  ],
+  "that thing Leslie Lamport invented": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.7043471750225963
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000432578853009
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000314474636565
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000047264829843
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000035204936921
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000022524811811
+    }
+  ],
+  "what happens when the network splits": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.6861880024410839
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5004816098628303
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5004631482137065
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5001239034583809
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000537703561095
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000261859276849
+    }
+  ],
+  "teaching computers to find patterns": [
+    {
+      "file": "machine-learning-primer",
+      "score": 0.7296373506478943
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000126508211878
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000106164179654
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000060893589758
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000045567676351
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000013747974208
+    }
+  ],
+  "how much runway before we're out of cash": [
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.6919149616459742
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000402374279516
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000100210145306
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000027872956706
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000018252218297
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000013285294926
+    }
+  ],
+  "the 47 issues we found before shipping": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.7104811737861184
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5005915766964705
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5004482192416517
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.500100939576889
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000957225990661
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000438665227886
+    }
+  ],
+  "grouping customers by behavior": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5037053454808724
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5004163519099089
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5001293525391038
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000250573029706
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000036201822694
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000029705547604
+    }
+  ],
+  "why URLs should be things not actions": [
+    {
+      "file": "api-design-principles",
+      "score": 0.7308727804612564
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000802103161218
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000210358648349
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000105491581037
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.500005588656222
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000037906636406
+    }
+  ],
+  "what Eric Brewer proved you can't have": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.7291443016025242
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5002812988235457
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5002378439642372
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000199641162801
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000166161862519
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000135214122532
+    }
+  ],
+  "how fast the new feature loaded": [
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.6862874259255904
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5016005198752358
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5004898564254074
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5001984520390962
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000546454136937
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000189264792335
+    }
+  ],
+  "days everyone needs to be in the office": [
+    {
+      "file": "remote-work-policy",
+      "score": 0.7244323990126792
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5002078059504532
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5002023200248541
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.500062497099536
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000372974717938
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000216219359437
+    }
+  ],
+  "the number that shows customers are expanding": [
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.7149923247168126
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5005682448272676
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.500031462470319
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000199132991733
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000139335979803
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000099810258676
+    }
+  ],
+  "telling spam from real email": [
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5921819060928907
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5002238539159908
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5000373220063228
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5000304166114427
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.500014765322699
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000142311127964
+    }
+  ],
+  "how to get user 123's purchases": [
+    {
+      "file": "api-design-principles",
+      "score": 0.7306810365723966
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.509629423167479
+    },
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.5009826879402771
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5002424695513599
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.5001171560776516
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000622340227406
+    }
+  ],
+  "zookeeper etcd consul what they have in common": [
+    {
+      "file": "distributed-systems-overview",
+      "score": 0.7222236224250776
+    },
+    {
+      "file": "product-launch-retrospective",
+      "score": 0.5000370511151463
+    },
+    {
+      "file": "api-design-principles",
+      "score": 0.5000188247195094
+    },
+    {
+      "file": "startup-fundraising-memo",
+      "score": 0.500015343874106
+    },
+    {
+      "file": "machine-learning-primer",
+      "score": 0.5000128910805841
+    },
+    {
+      "file": "remote-work-policy",
+      "score": 0.5000089142658899
+    }
+  ]
+}

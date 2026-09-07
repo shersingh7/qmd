@@ -49,6 +49,8 @@ def main():
     default_quant = os.getenv("MLX_EMBED_QUANT", "bf16")
     default_dtype = os.getenv("MLX_EMBED_DTYPE", "float32")
     default_max_tokens = int(os.getenv("MLX_MAX_BATCH_TOKENS", "0"))
+    default_rerank = os.getenv("MLX_RERANK_MODEL", "")
+    default_generate = os.getenv("MLX_GENERATE_MODEL", "")
 
     parser = argparse.ArgumentParser(description="QMD MLX Embedding Server (Apple Silicon Metal Native)")
     parser.add_argument("--model", default=default_model, help="Hugging Face repo or local path")
@@ -61,11 +63,17 @@ def main():
     parser.add_argument("--no-preload", action="store_false", dest="preload", help="Lazy load model on first request")
     parser.add_argument("--no-warmup", action="store_true", help="Skip Metal GPU warmup passes")
     parser.add_argument("--max-batch-tokens", type=int, default=default_max_tokens, help="Max tokens per GPU micro-batch")
+    parser.add_argument("--rerank-model", default=default_rerank, help="Optional rerank model (HF repo or local path); enables /rerank")
+    parser.add_argument("--generate-model", default=default_generate, help="Optional generation model (HF repo or local path); enables /generate")
 
     args = parser.parse_args()
 
     print(f"[mlx-server] Starting server on http://{args.host}:{args.port}")
     print(f"[mlx-server] Model: {args.model} | Dtype: {args.dtype} | MaxLength: {args.max_length}")
+    if args.rerank_model:
+        print(f"[mlx-server] Rerank: {args.rerank_model}")
+    if args.generate_model:
+        print(f"[mlx-server] Generate: {args.generate_model}")
 
     server, thread = start_server(
         model_name=args.model,
@@ -77,6 +85,8 @@ def main():
         preload=args.preload,
         warmup=not args.no_warmup,
         max_batch_tokens=args.max_batch_tokens,
+        rerank_model=args.rerank_model or None,
+        generate_model=args.generate_model or None,
     )
 
     try:

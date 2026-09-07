@@ -1,0 +1,13 @@
+{
+  "gguf_top1_accuracy": 0.8,
+  "local4b_top1_accuracy": 0.68,
+  "mxfp8_top1_accuracy": 0.68,
+  "eightbit_top1_accuracy": 0.72,
+  "hits": {
+    "gguf": 20,
+    "local4b": 17,
+    "mxfp8": 17,
+    "eightbit": 18
+  },
+  "n": 25
+}

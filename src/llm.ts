@@ -485,6 +485,8 @@ export class LlamaCpp implements LLM {
   private mlxDescriptor: EmbeddingDescriptor | null = null;
   private mlxFailed = false;
   private mlxWarm = false;  // whether first request already warmed up
+  private mlxRerankFallback: boolean;   // GGUF fallback allowed for rerank (default: true)
+  private mlxExpandFallback: boolean;   // GGUF fallback allowed for expansion (default: true)
   private embedModelLoadPromise: Promise<LlamaModel> | null = null;
   private generateModelLoadPromise: Promise<LlamaModel> | null = null;
   private rerankModelLoadPromise: Promise<LlamaModel> | null = null;
@@ -511,7 +513,9 @@ export class LlamaCpp implements LLM {
     this.mlxDtype = config.mlxDtype ?? 'float32';
     this.mlxConcurrency = resolved.mlxConcurrency;
     this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
-    this.mlxFallback = config.mlxFallback ?? (!this.failClosed);
+    this.mlxFallback = config.mlxFallback ?? true;
+    this.mlxRerankFallback = (process.env.QMD_MLX_RERANK_FALLBACK ?? '1') !== '0';
+    this.mlxExpandFallback = (process.env.QMD_MLX_EXPAND_FALLBACK ?? '1') !== '0';
     this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || (this.embedBackend === 'mlx' ? resolved.model : DEFAULT_EMBED_MODEL);
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
@@ -1178,6 +1182,105 @@ export class LlamaCpp implements LLM {
     }
   }
 
+  /**
+   * MLX rerank fast-path. Mirrors the GGUF contract: dedupe texts, score,
+   * reassemble in original document order, sort by score descending.
+   * Returns null when the daemon is unreachable or misconfigured; the
+   * caller decides whether to fall back to GGUF.
+   */
+  private async _rerankMlx(query: string, documents: RerankDocument[]): Promise<RerankResult | null> {
+    try {
+      await this._ensureMlxClient();
+      const { rerankWithMlx } = await import('./mlx.js');
+
+      // Deduplicate identical texts (same discipline as the GGUF path).
+      const textToDocs = new Map<string, { file: string; index: number }[]>();
+      documents.forEach((doc, index) => {
+        const existing = textToDocs.get(doc.text);
+        if (existing) existing.push({ file: doc.file, index });
+        else textToDocs.set(doc.text, [{ file: doc.file, index }]);
+      });
+      const uniqueTexts = Array.from(textToDocs.keys());
+      if (uniqueTexts.length === 0) return { results: [], model: "mlx" };
+
+      const res = await rerankWithMlx(query, uniqueTexts, this.mlxUrlOverride ? { url: this.mlxUrlOverride } : undefined);
+      if (!res) {
+        // Unreachable or invalid — decide fallback by config.
+        if (this.mlxRerankFallback) return null;
+        throw new Error("MLX rerank failed and GGUF rerank fallback is disabled (QMD_MLX_RERANK_FALLBACK=0)");
+      }
+
+      const ranked = uniqueTexts
+        .map((text, i) => ({ text, score: res.scores[i]! }))
+        .sort((a, b) => b.score - a.score);
+
+      const results: RerankDocumentResult[] = [];
+      for (const item of ranked) {
+        for (const docInfo of textToDocs.get(item.text) ?? []) {
+          results.push({ file: docInfo.file, score: item.score, index: docInfo.index });
+        }
+      }
+      return { results, model: res.model };
+    } catch (err) {
+      if (this.mlxRerankFallback) {
+        console.warn(`MLX rerank error, falling back to GGUF: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * MLX query-expansion fast-path. Returns null to signal GGUF fallback.
+   */
+  private async _expandQueryMlx(query: string, includeLexical: boolean, intent?: string): Promise<Queryable[] | null> {
+    try {
+      await this._ensureMlxClient();
+      const { generateWithMlx } = await import('./mlx.js');
+      const prompt = intent
+        ? `/no_think Expand this search query: ${query}\nQuery intent: ${intent}`
+        : `/no_think Expand this search query: ${query}`;
+      const text = await generateWithMlx(prompt, this.mlxUrlOverride ? { url: this.mlxUrlOverride } : undefined, {
+        maxTokens: 600,
+        temperature: 0.7,
+      });
+      if (!text) {
+        if (this.mlxExpandFallback) return null;
+        throw new Error("MLX query expansion failed and GGUF fallback is disabled (QMD_MLX_EXPAND_FALLBACK=0)");
+      }
+
+      // Same parsing contract as the GGUF path.
+      const lines = text.trim().split("\n");
+      const queryLower = query.toLowerCase();
+      const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+      const hasQueryTerm = (t: string): boolean => {
+        const lower = t.toLowerCase();
+        if (queryTerms.length === 0) return true;
+        return queryTerms.some((term) => lower.includes(term));
+      };
+      const queryables: Queryable[] = lines
+        .map((line) => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx === -1) return null;
+          const type = line.slice(0, colonIdx).trim();
+          if (type !== 'lex' && type !== 'vec' && type !== 'hyde') return null;
+          const t = line.slice(colonIdx + 1).trim();
+          if (!hasQueryTerm(t)) return null;
+          return { type: type as QueryType, text: t };
+        })
+        .filter((q): q is Queryable => q !== null);
+      const filtered = includeLexical ? queryables : queryables.filter((q) => q.type !== 'lex');
+      if (filtered.length > 0) return filtered;
+      return null; // let the GGUF path produce its structured fallback
+    } catch (err) {
+      if (this.mlxExpandFallback) {
+        console.warn(`MLX expansion error, falling back to GGUF: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      }
+      throw err;
+    }
+  }
+
   private async _embedBatchMlx(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
     if (this.mlxFailed && this.mlxFallback) return texts.map(() => null);
     if (texts.length === 0) return [];
@@ -1266,6 +1369,16 @@ export class LlamaCpp implements LLM {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
+
+    // MLX fast-path: route query expansion through the MLX daemon when active.
+    // OPT-IN (QMD_MLX_EXPAND=1) pending a downstream Recall@10 eval vs the
+    // tuned GGUF expansion model (Sep 7 2026). The GGUF model was fine-tuned
+    // for this exact lex/vec/hyde grammar; the MLX path enforces the same
+    // format by parsing only.
+    if (this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_EXPAND === '1') {
+      const mlxQueries = await this._expandQueryMlx(query, options.includeLexical ?? true, options.intent);
+      if (mlxQueries && mlxQueries.length > 0) return mlxQueries;
+    }
 
     const llama = await this.ensureLlama();
     await this.ensureGenerateModel();
@@ -1365,6 +1478,18 @@ export class LlamaCpp implements LLM {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
+
+    // MLX fast-path: route reranking through the MLX daemon when active.
+    // OPT-IN (QMD_MLX_RERANK=1): measured ground-truth accuracy on the
+    // 25-query eval (docs/benchmarks/ground_truth_accuracy.json) shows the
+    // GGUF path ranks hard queries better (80% vs 68-72% for MLX 4B builds,
+    // Sep 7 2026). Flip the default only if a later build closes the gap.
+    // Fail-closed: when enabled but unreachable, falls back to GGUF only if
+    // QMD_MLX_RERANK_FALLBACK is not 0.
+    if (this.embedBackend === 'mlx' && !this.mlxFailed && process.env.QMD_MLX_RERANK === '1') {
+      const mlxResult = await this._rerankMlx(query, documents);
+      if (mlxResult) return mlxResult;
+    }
 
     const contexts = await this.ensureRerankContexts();
     const model = await this.ensureRerankModel();

@@ -8,7 +8,7 @@ import socketserver
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from .protocol import (
     encode_binary_embeddings,
@@ -17,6 +17,40 @@ from .protocol import (
 )
 from .runtime import MLXEmbeddingRuntime, MLXRuntimeError
 from .batching import BatchPlanner
+
+
+def _validate_rerank_request(payload: dict) -> tuple[str, list[str]]:
+    """Validates a /rerank request body. Returns (query, documents)."""
+    query = payload.get("query")
+    documents = payload.get("documents")
+    if not isinstance(query, str) or not query.strip():
+        raise ProtocolError("'query' must be a non-empty string")
+    if not isinstance(documents, list) or len(documents) == 0:
+        raise ProtocolError("'documents' must be a non-empty list of strings")
+    if len(documents) > 128:
+        raise ProtocolError(f"'documents' exceeds per-request limit of 128 (got {len(documents)})")
+    for i, doc in enumerate(documents):
+        if not isinstance(doc, str):
+            raise ProtocolError(f"document at index {i} is not a string")
+        if len(doc) > 256 * 1024:
+            raise ProtocolError(f"document at index {i} exceeds 256KB")
+    return query, documents
+
+
+def _validate_generate_request(payload: dict) -> tuple[str, int, float]:
+    """Validates a /generate request body. Returns (prompt, max_tokens, temperature)."""
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ProtocolError("'prompt' must be a non-empty string")
+    if len(prompt) > 128 * 1024:
+        raise ProtocolError("'prompt' exceeds 128KB")
+    max_tokens = payload.get("max_tokens", 600)
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0 or max_tokens > 4096:
+        raise ProtocolError(f"'max_tokens' must be an integer in (0, 4096], got {max_tokens}")
+    temperature = payload.get("temperature", 0.0)
+    if not isinstance(temperature, (int, float)) or isinstance(temperature, bool) or not (0.0 <= float(temperature) <= 2.0):
+        raise ProtocolError(f"'temperature' must be a number in [0.0, 2.0], got {temperature}")
+    return prompt, max_tokens, float(temperature)
 
 
 class ServerState:
@@ -33,6 +67,8 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     # Injected by server
     runtime: Optional[MLXEmbeddingRuntime] = None
     batch_planner: Optional[BatchPlanner] = None
+    rerank_adapter: Optional[Any] = None
+    generate_adapter: Optional[Any] = None
     state: str = ServerState.STARTING
     state_error: Optional[str] = None
     max_body_bytes: int = 10 * 1024 * 1024  # 10 MB limit
@@ -82,6 +118,8 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "dims": self.runtime.native_dims if self.runtime else None,
                 "ready": self.state == ServerState.READY,
                 "descriptor": desc,
+                "rerank_model": self.rerank_adapter.model_name if self.rerank_adapter else None,
+                "generate_model": self.generate_adapter.model_name if self.generate_adapter else None,
                 "error": self.state_error,
             })
         elif path == "/ready":
@@ -93,7 +131,12 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             if self.state != ServerState.READY or not self.runtime:
                 self._send_json({"error": "Server not ready"}, 503)
             else:
-                self._send_json(self.runtime.get_descriptor(), 200)
+                d = self.runtime.get_descriptor()
+                if self.rerank_adapter:
+                    d["rerank"] = self.rerank_adapter.get_descriptor()
+                if self.generate_adapter:
+                    d["generate"] = self.generate_adapter.get_descriptor()
+                self._send_json(d, 200)
         elif path == "/memory":
             if not self.runtime:
                 self._send_json({"active_mb": 0.0, "peak_mb": 0.0, "model_mb": 0.0}, 200)
@@ -117,7 +160,7 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         path = self.path.split("?")[0].rstrip("/")
-        if path not in ("/embed", "/embed-bin", "/tokenize"):
+        if path not in ("/embed", "/embed-bin", "/tokenize", "/rerank", "/generate"):
             self._send_json({"error": f"Not found: {self.path}"}, 404)
             return
 
@@ -158,6 +201,49 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             tokens = self.runtime.tokenize(texts)
             counts = [len(t) for t in tokens]
             self._send_json({"tokens": tokens, "counts": counts}, 200)
+            return
+
+        # Rerank endpoint
+        if path == "/rerank":
+            if self.rerank_adapter is None:
+                self._send_json({"error": "Rerank adapter not configured on this server"}, 501)
+                return
+            try:
+                query, documents = _validate_rerank_request(payload)
+            except ProtocolError as pe:
+                self._send_json({"error": str(pe)}, 400)
+                return
+            try:
+                scores = self.rerank_adapter.score_pairs(query, documents)
+                self._send_json({
+                    "scores": scores,
+                    "model": self.rerank_adapter.model_name,
+                    "count": len(scores),
+                }, 200)
+            except Exception as exc:
+                self._send_json({"error": f"Rerank inference failed: {exc}"}, 500)
+            return
+
+        # Generate endpoint
+        if path == "/generate":
+            if self.generate_adapter is None:
+                self._send_json({"error": "Generate adapter not configured on this server"}, 501)
+                return
+            try:
+                prompt, max_tokens, temperature = _validate_generate_request(payload)
+            except ProtocolError as pe:
+                self._send_json({"error": str(pe)}, 400)
+                return
+            try:
+                text = self.generate_adapter.submit_generate(
+                    prompt, max_tokens=max_tokens, temperature=temperature, timeout=120.0
+                )
+                self._send_json({
+                    "text": text,
+                    "model": self.generate_adapter.model_name,
+                }, 200)
+            except Exception as exc:
+                self._send_json({"error": f"Generate inference failed: {exc}"}, 500)
             return
 
         # Validate embed request
@@ -215,9 +301,11 @@ def start_server(
     preload: bool = True,
     warmup: bool = True,
     max_batch_tokens: int = 0,
+    rerank_model: Optional[str] = None,
+    generate_model: Optional[str] = None,
 ) -> tuple[ThreadedMLXServer, threading.Thread]:
     """
-    Initializes runtime, starts HTTP server, and begins listening.
+    Initializes runtime (+ optional rerank/generate adapters), starts HTTP server.
     """
     MLXHTTPRequestHandler.bind_host = bind_host
     MLXHTTPRequestHandler.state = ServerState.STARTING
@@ -240,6 +328,21 @@ def start_server(
                 if warmup:
                     runtime.warmup()
                 MLXHTTPRequestHandler.runtime = runtime
+
+                if rerank_model:
+                    from .rerank import MLXRerankAdapter
+                    MLXHTTPRequestHandler.rerank_adapter = MLXRerankAdapter(
+                        model_name=rerank_model, max_length=2048
+                    )
+                    print(f"[mlx-server] Rerank adapter ready: {rerank_model}")
+
+                if generate_model:
+                    from .generate import MLXGenerateAdapter
+                    MLXHTTPRequestHandler.generate_adapter = MLXGenerateAdapter(
+                        model_name=generate_model
+                    )
+                    print(f"[mlx-server] Generate adapter ready: {generate_model}")
+
                 MLXHTTPRequestHandler.state = ServerState.READY
                 print(f"[mlx-server] Model '{model_name}' ready on http://{bind_host}:{port}")
             except Exception as e:

@@ -254,6 +254,59 @@ export async function embedBatchBinaryWithMlx(
   return r.map((x) => x!.embedding);
 }
 
+// ── Rerank / Generate client API ───────────────────────────────────────────
+
+export type MlxRerankResult = {
+  scores: number[];
+  model: string;
+};
+
+export async function rerankWithMlx(
+  query: string,
+  documents: string[],
+  config?: MlxEmbedConfig,
+): Promise<MlxRerankResult | null> {
+  if (!query.trim() || documents.length === 0) return null;
+  const res = await _fetchJson(`${url(config)}/rerank`, { query, documents }, Math.max(timeoutMs(config), 120_000));
+  if (!res.ok || !res.data) {
+    console.error(`MLX rerank failed: ${res.error}`);
+    return null;
+  }
+  const scores = res.data.scores;
+  if (!Array.isArray(scores) || scores.length !== documents.length) {
+    console.error(`MLX rerank returned ${Array.isArray(scores) ? scores.length : typeof scores} scores, expected ${documents.length}`);
+    return null;
+  }
+  for (const s of scores) {
+    if (typeof s !== "number" || !Number.isFinite(s)) {
+      console.error("MLX rerank returned a non-finite score");
+      return null;
+    }
+  }
+  return { scores, model: res.data.model ?? "mlx" };
+}
+
+export async function generateWithMlx(
+  prompt: string,
+  config?: MlxEmbedConfig,
+  opts?: { maxTokens?: number; temperature?: number },
+): Promise<string | null> {
+  if (!prompt.trim()) return null;
+  const payload: Record<string, unknown> = { prompt, max_tokens: opts?.maxTokens ?? 600 };
+  if (opts?.temperature !== undefined) payload.temperature = opts.temperature;
+  const res = await _fetchJson(`${url(config)}/generate`, payload, Math.max(timeoutMs(config), 120_000));
+  if (!res.ok || !res.data) {
+    console.error(`MLX generate failed: ${res.error}`);
+    return null;
+  }
+  const text = res.data.text;
+  if (typeof text !== "string") {
+    console.error("MLX generate returned non-string text");
+    return null;
+  }
+  return text;
+}
+
 export async function mlxHealth(config?: MlxEmbedConfig): Promise<MlxHealth | null> {
   try {
     const resp = await fetch(`${url(config)}/health`, {

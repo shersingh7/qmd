@@ -1,6 +1,8 @@
 // Same-model head-to-head: GGUF Qwen3-Embedding-4B Q4_K_M (llama.cpp) vs
 // MLX Qwen3-Embedding-4B affine-4bit, identical texts, warm process.
 // Run: bun scripts/timing-embed-4b-gguf.ts
+// NOTE: bun 1.3.8 segfaults at hard process.exit() after native (llama.cpp)
+// teardown — data prints first; we exit by draining the loop instead.
 import { LlamaCpp } from "../dist/llm.js";
 
 const llm = new LlamaCpp({
@@ -30,4 +32,7 @@ for (let rep = 0; rep < 2; rep++) {
     }
   }));
 }
-process.exit(0);
+
+// Graceful exit: dispose native resources, then let the event loop drain
+// (hard process.exit() segfaults bun 1.3.8 after llama.cpp teardown).
+try { await llm.dispose(); } catch { /* best effort */ }

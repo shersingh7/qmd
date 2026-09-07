@@ -5,7 +5,7 @@
     "top1_recall": 0.72,
     "hits": 18,
     "n": 25,
-    "load_s": 2.77,
+    "load_s": 3.2,
     "index_s": 1.09,
     "query_s": 0.33,
     "per_query": [
@@ -192,8 +192,8 @@
     "top1_recall": 0.84,
     "hits": 21,
     "n": 25,
-    "load_s": 0.61,
-    "index_s": 11.064,
+    "load_s": 1.19,
+    "index_s": 11.059,
     "query_s": 2.31,
     "per_query": [
       {
@@ -380,8 +380,8 @@
     "hits": 20,
     "n": 25,
     "load_s": 1.2,
-    "index_s": 11.063,
-    "query_s": 2.32,
+    "index_s": 11.068,
+    "query_s": 2.31,
     "per_query": [
       {
         "query": "that tradeoff between data correctness a",

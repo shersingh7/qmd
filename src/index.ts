@@ -62,8 +62,28 @@ import {
   type ReindexResult,
   type EmbedProgress,
   type EmbedResult,
+  type EmbedOutcomeStatus,
   type ChunkStrategy,
 } from "./store.js";
+import {
+  runDurableIndexingJob,
+} from "./indexing/job.js";
+export {
+  runDurableIndexingJob,
+  validateShadowTarget,
+  ShadowDatabaseProtectionError,
+  IndexingFingerprintMismatchError,
+  FingerprintMismatchError,
+  type IndexingJobOptions,
+} from "./indexing/job.js";
+export {
+  computeDescriptorSignature,
+  saveCheckpoint,
+  getActiveCheckpoint,
+  initCheckpointTable,
+  type IndexingJobCheckpoint,
+  type IndexingFingerprint,
+} from "./indexing/checkpoint.js";
 import {
   LlamaCpp,
   getEmbedBackend,
@@ -101,6 +121,7 @@ export type {
   ReindexResult,
   EmbedProgress,
   EmbedResult,
+  EmbedOutcomeStatus,
   Collection,
   CollectionConfig,
   NamedCollection,
@@ -181,7 +202,7 @@ export interface SearchOptions {
   minScore?: number;
   /** Include explain traces */
   explain?: boolean;
-  /** Chunk strategy: "auto" (default, uses AST for code files) or "regex" (legacy) */
+  /** Chunk strategy: "regex" (default) or "auto" (AST for code files) */
   chunkStrategy?: ChunkStrategy;
 }
 
@@ -537,13 +558,13 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     },
 
     embed: async (embedOpts) => {
-      return generateEmbeddings(internal, {
+      return runDurableIndexingJob(internal, {
         force: embedOpts?.force,
         model: embedOpts?.model,
         maxDocsPerBatch: embedOpts?.maxDocsPerBatch,
         maxBatchBytes: embedOpts?.maxBatchBytes,
         chunkStrategy: embedOpts?.chunkStrategy,
-        onProgress: embedOpts?.onProgress,
+        onProgress: embedOpts?.onProgress ? (info) => embedOpts.onProgress!(info) : undefined,
       });
     },
 

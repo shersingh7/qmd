@@ -77,6 +77,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
+import { runDurableIndexingJob } from "../indexing/job.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
 import {
   formatSearchResults,
@@ -194,6 +195,7 @@ const c = {
   dim: useColor ? "\x1b[2m" : "",
   bold: useColor ? "\x1b[1m" : "",
   cyan: useColor ? "\x1b[36m" : "",
+  red: useColor ? "\x1b[31m" : "",
   yellow: useColor ? "\x1b[33m" : "",
   green: useColor ? "\x1b[32m" : "",
   magenta: useColor ? "\x1b[35m" : "",
@@ -1736,50 +1738,81 @@ async function vectorIndex(
     const maxBatchBytes = batchOptions.maxBatchBytes ?? DEFAULT_EMBED_MAX_BATCH_BYTES;
     console.log(`${c.dim}Batch: ${maxDocsPerBatch} docs / ${formatBytes(maxBatchBytes)}${c.reset}\n`);
   }
+
   cursor.hide();
   progress.indeterminate();
 
+  const abortController = new AbortController();
+  const onSigint = () => {
+    process.stderr.write("\nGracefully cancelling embedding...\n");
+    abortController.abort();
+  };
+  process.on("SIGINT", onSigint);
+
   const startTime = Date.now();
+  let result;
+  try {
+    result = await runDurableIndexingJob(storeInstance, {
+      force,
+      model,
+      maxDocsPerBatch: batchOptions?.maxDocsPerBatch,
+      maxBatchBytes: batchOptions?.maxBatchBytes,
+      chunkStrategy: batchOptions?.chunkStrategy,
+      signal: abortController.signal,
+      onProgress: (info, cp) => {
+        if (info.totalBytes === 0) return;
+        const percent = (info.bytesProcessed / info.totalBytes) * 100;
+        progress.set(percent);
 
-  const result = await generateEmbeddings(storeInstance, {
-    force,
-    model,
-    maxDocsPerBatch: batchOptions?.maxDocsPerBatch,
-    maxBatchBytes: batchOptions?.maxBatchBytes,
-    chunkStrategy: batchOptions?.chunkStrategy,
-    onProgress: (info) => {
-      if (info.totalBytes === 0) return;
-      const percent = (info.bytesProcessed / info.totalBytes) * 100;
-      progress.set(percent);
+        const elapsed = (Date.now() - startTime) / 1000;
+        const bytesPerSec = info.bytesProcessed / elapsed;
+        const remainingBytes = info.totalBytes - info.bytesProcessed;
+        const etaSec = remainingBytes / bytesPerSec;
 
-      const elapsed = (Date.now() - startTime) / 1000;
-      const bytesPerSec = info.bytesProcessed / elapsed;
-      const remainingBytes = info.totalBytes - info.bytesProcessed;
-      const etaSec = remainingBytes / bytesPerSec;
+        const bar = renderProgressBar(percent);
+        const percentStr = percent.toFixed(0).padStart(3);
+        const throughput = `${formatBytes(bytesPerSec)}/s`;
+        const eta = elapsed > 2 ? formatETA(etaSec) : "...";
+        const errStr = info.errors > 0 ? ` ${c.yellow}${info.errors} err${c.reset}` : "";
 
-      const bar = renderProgressBar(percent);
-      const percentStr = percent.toFixed(0).padStart(3);
-      const throughput = `${formatBytes(bytesPerSec)}/s`;
-      const eta = elapsed > 2 ? formatETA(etaSec) : "...";
-      const errStr = info.errors > 0 ? ` ${c.yellow}${info.errors} err${c.reset}` : "";
-
-      if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}%${c.reset} ${c.dim}${info.chunksEmbedded}/${info.totalChunks}${c.reset}${errStr} ${c.dim}${throughput} ETA ${eta}${c.reset}   `);
-    },
-  });
-
-  progress.clear();
-  cursor.show();
+        if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}%${c.reset} ${c.dim}${info.chunksEmbedded}/${info.totalChunks}${c.reset}${errStr} ${c.dim}${throughput} ETA ${eta}${c.reset}   `);
+      },
+    });
+  } finally {
+    process.off("SIGINT", onSigint);
+    progress.clear();
+    cursor.show();
+  }
 
   const totalTimeSec = result.durationMs / 1000;
 
-  if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
-    console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
-  } else {
-    console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
-    console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksEmbedded}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
-    if (result.errors > 0) {
-      console.log(`${c.yellow}⚠ ${result.errors} chunks failed${c.reset}`);
+  if (result.status === 'complete' && result.errors === 0 && result.chunksSkipped === 0) {
+    if (result.chunksCommitted === 0 && result.docsProcessed === 0) {
+      console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
+    } else {
+      console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
+      console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksCommitted}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
     }
+    process.exitCode = 0;
+  } else {
+    const totalAttemptedAndSkipped = result.chunksCommitted + result.chunksFailed + result.chunksSkipped;
+    const percent = totalAttemptedAndSkipped > 0
+      ? Math.round((result.chunksCommitted / totalAttemptedAndSkipped) * 100)
+      : 0;
+
+    console.log(`\r${c.yellow}${renderProgressBar(percent)}${c.reset} ${c.bold}${percent}%${c.reset}                                    `);
+    if (result.status === 'cancelled') {
+      console.log(`\n${c.yellow}⚠ Embedding cancelled.${c.reset} Committed ${c.bold}${result.chunksCommitted}${c.reset} chunks (${result.chunksSkipped} skipped) in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
+    } else if (result.status === 'partial') {
+      console.log(`\n${c.yellow}⚠ Embedding partially completed.${c.reset} Committed ${c.bold}${result.chunksCommitted}${c.reset} chunks from ${c.bold}${result.docsProcessed}/${result.docsSelected}${c.reset} documents (${result.chunksFailed} failed, ${result.chunksSkipped} skipped) in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
+    } else {
+      console.log(`\n${c.red}✗ Embedding failed.${c.reset} ${result.firstFailureReason ?? "Unknown error"}`);
+    }
+
+    if (result.firstFailureReason && result.status !== 'failed') {
+      console.log(`${c.dim}First error: ${result.firstFailureReason}${c.reset}`);
+    }
+    process.exitCode = 1;
   }
 
   closeDb();
@@ -1840,7 +1873,7 @@ type OutputOptions = {
   candidateLimit?: number;  // Max candidates to rerank (default: 40)
   intent?: string;       // Domain intent for disambiguation
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
-  chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
+  chunkStrategy?: ChunkStrategy;  // "regex" (default) or "auto"
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -3374,7 +3407,7 @@ if (isMain) {
 
   if (cli.command !== "mcp") {
     await disposeDefaultLlamaCpp();
-    process.exit(0);
+    process.exit(process.exitCode ?? 0);
   }
 
 } // end if (main module)

@@ -141,3 +141,35 @@ def test_server_error_handling(mlx_server):
         timeout=2,
     )
     assert r.status_code == 403
+
+
+def test_server_bounded_semaphore_prevents_capacity_inflation():
+    import threading
+    from unittest.mock import MagicMock
+    from scripts.qmd_mlx.server import ThreadedMLXServer, MLXHTTPRequestHandler
+
+    server = ThreadedMLXServer(("127.0.0.1", 0), MLXHTTPRequestHandler, max_threads=2)
+    try:
+        assert isinstance(server.thread_limiter, threading.BoundedSemaphore)
+        # Verify initial available permits is 2
+        assert server.thread_limiter.acquire(blocking=False)
+        assert server.thread_limiter.acquire(blocking=False)
+        # 3rd acquire fails
+        assert not server.thread_limiter.acquire(blocking=False)
+
+        # Release both
+        server.thread_limiter.release()
+        server.thread_limiter.release()
+
+        # Extra close_request/release must not inflate capacity beyond 2
+        mock_req = MagicMock()
+        server.close_request(mock_req)
+
+        # Capacity should still be exactly 2
+        assert server.thread_limiter.acquire(blocking=False)
+        assert server.thread_limiter.acquire(blocking=False)
+        assert not server.thread_limiter.acquire(blocking=False)
+        server.thread_limiter.release()
+        server.thread_limiter.release()
+    finally:
+        server.server_close()

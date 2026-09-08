@@ -2,9 +2,20 @@
 rerank.py — MLX-native Reranker Adapter for Qwen3-Reranker Models
 """
 
+from __future__ import annotations
+
+import threading
 import time
-import numpy as np
 from typing import Any, Optional
+import numpy as np
+
+from .protocol import (
+    DeadlineExceededError,
+    InvalidInputError,
+    MLXServerError,
+    ModelUnavailableError,
+    RequestCancelledError,
+)
 
 try:
     import mlx.core as mx
@@ -14,9 +25,10 @@ except ImportError:
     _MLX_AVAILABLE = False
 
 
-class RerankError(ValueError):
+class RerankError(MLXServerError):
     """Raised when reranker input validation or inference fails."""
-    pass
+    status_code = 400
+    error_type = "rerank_error"
 
 
 class MLXRerankAdapter:
@@ -31,6 +43,9 @@ class MLXRerankAdapter:
     )
     DEFAULT_INSTRUCT = "Given a web search query, retrieve relevant passages that answer the query"
 
+    # Official Qwen3-Reranker suffix
+    THINK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n\n\n\n"
+
     def __init__(
         self,
         model_name: str = "mlx-community/Qwen3-Reranker-4B-mxfp8",
@@ -39,15 +54,19 @@ class MLXRerankAdapter:
         max_length: int = 2048,
         revision: Optional[str] = None,
         lazy_load: bool = False,
+        executor: Optional[Any] = None,
+        model_manager: Optional[Any] = None,
     ):
         if not _MLX_AVAILABLE:
-            raise RerankError("MLX or mlx-lm is not installed.")
+            raise ModelUnavailableError("MLX or mlx-lm is not installed.")
 
         self.model_name = model_name
         self.quantization = quantization
         self.dtype_str = dtype_str
         self.max_length = max_length
         self.revision = revision
+        self.executor = executor
+        self.model_manager = model_manager
 
         self.model: Any = None
         self.tokenizer: Any = None
@@ -60,8 +79,17 @@ class MLXRerankAdapter:
         self.total_pairs_scored: int = 0
         self.total_latency_ms: float = 0.0
 
-        if not lazy_load:
+        if not lazy_load and self.model_manager is None:
             self.load()
+
+    def load_via_manager(self, timeout_s: float = 120.0):
+        if self.model_manager is not None:
+            self.model_manager.ensure_loaded("rerank", timeout_s=timeout_s)
+        else:
+            self.load()
+
+    def is_loaded(self) -> bool:
+        return self.model is not None and self.yes_token_id is not None
 
     def _get_active_memory_mb(self) -> float:
         try:
@@ -81,23 +109,19 @@ class MLXRerankAdapter:
         t0 = time.time()
         mem_before = self._get_active_memory_mb()
 
-        model, tokenizer_wrap = mlx_lm.load(
-            self.model_name,
-            revision=self.revision,
-        )
+        try:
+            model, tokenizer_wrap = mlx_lm.load(
+                self.model_name,
+                revision=self.revision,
+            )
+        except Exception as exc:
+            raise ModelUnavailableError(f"Failed to load rerank model '{self.model_name}': {exc}")
+
         self.model = model
         self.tokenizer = tokenizer_wrap
         self.raw_hf_tokenizer = getattr(tokenizer_wrap, "_tokenizer", tokenizer_wrap)
 
-        # Dynamically resolve yes / no token IDs from the loaded tokenizer
-        yes_tokens = self.raw_hf_tokenizer.encode("yes", add_special_tokens=False)
-        no_tokens = self.raw_hf_tokenizer.encode("no", add_special_tokens=False)
-
-        if not yes_tokens or not no_tokens:
-            raise RerankError(f"Could not resolve yes/no token IDs for model '{self.model_name}'")
-
-        self.yes_token_id = int(yes_tokens[0])
-        self.no_token_id = int(no_tokens[0])
+        self._resolve_token_ids()
 
         self.model_memory_mb = max(0.0, self._get_active_memory_mb() - mem_before)
         elapsed = time.time() - t0
@@ -106,62 +130,72 @@ class MLXRerankAdapter:
             f"{self.model_memory_mb:.1f}MB Metal) in {elapsed:.2f}s"
         )
 
-    # Official Qwen3-Reranker suffix: the 4B/8B rerankers descend from
-    # thinking-capable bases and only emit the trained yes/no signal AFTER
-    # the thinking-close marker (verified against the official model card,
-    # Sep 7 2026). The 0.6B has an explicit LogitScore head and is insensitive.
-    THINK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n\n\n\n"
+    def _resolve_token_ids(self):
+        """Dynamically resolve yes/no token IDs in the chat suffix context."""
+        if self.raw_hf_tokenizer is None:
+            raise RerankError("Tokenizer not loaded")
+
+        suffix_tokens = self.raw_hf_tokenizer.encode(self.THINK_SUFFIX, add_special_tokens=False)
+        yes_context = self.raw_hf_tokenizer.encode(self.THINK_SUFFIX + "yes", add_special_tokens=False)
+        no_context = self.raw_hf_tokenizer.encode(self.THINK_SUFFIX + "no", add_special_tokens=False)
+
+        if (
+            len(yes_context) == len(suffix_tokens) + 1
+            and len(no_context) == len(suffix_tokens) + 1
+        ):
+            yes_id = yes_context[-1]
+            no_id = no_context[-1]
+        else:
+            yes_tokens = self.raw_hf_tokenizer.encode("yes", add_special_tokens=False)
+            no_tokens = self.raw_hf_tokenizer.encode("no", add_special_tokens=False)
+            if not yes_tokens or not no_tokens:
+                raise RerankError(f"Could not resolve yes/no token IDs for model '{self.model_name}'")
+            yes_id = yes_tokens[0]
+            no_id = no_tokens[0]
+
+        if yes_id == no_id:
+            raise RerankError(f"Ambiguous or identical yes/no token IDs ({yes_id}) for model '{self.model_name}'")
+
+        self.yes_token_id = int(yes_id)
+        self.no_token_id = int(no_id)
+
+    def unload(self):
+        """Unloads model weights from memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+        self.model_memory_mb = 0.0
 
     def _format_pair(self, query: str, document: str) -> str:
-        """Formats query-document pair with the official Qwen3-Reranker prompt.
+        """Formats query-document pair with the official Qwen3-Reranker prompt."""
+        if not isinstance(document, str) or not document.strip():
+            raise RerankError("Document text is empty or whitespace.")
 
-        Uses the manual official format rather than the tokenizer's chat
-        template: some community conversions ship broken/lossy chat templates
-        (verified: Qwen3-Reranker-0.6B-4bit's template silently drops message
-        content — see docs/benchmarks/mlx-reranker-4b-mxfp8-defect.md).
-        Truncates the document (never the query) to fit max_length.
-        """
         query_text = f"<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: "
         query_toks = len(self.raw_hf_tokenizer.encode(query_text))
 
-        # Overhead for the chat scaffolding (system prompt, im_start/im_end tags)
-        # ~ 100 tokens
         safe_doc_budget = max(64, self.max_length - query_toks - 120)
-
         doc_toks = self.raw_hf_tokenizer.encode(document)
         if len(doc_toks) > safe_doc_budget:
-            truncated_doc = self.raw_hf_tokenizer.decode(doc_toks[:safe_doc_budget])
-        else:
-            truncated_doc = document
+            raise RerankError(
+                f"Document token length ({len(doc_toks)}) exceeds max safe budget ({safe_doc_budget}) for reranker"
+            )
 
         return (
             f"<|im_start|>system\n{self.DEFAULT_SYSTEM_PROMPT}<|im_end|>\n"
-            f"<|im_start|>user\n<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: {truncated_doc}"
+            f"<|im_start|>user\n<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: {document}"
             f"{self.THINK_SUFFIX}"
         )
 
-    def score_pairs(
+    def score_pairs_sync(
         self,
         query: str,
         documents: list[str],
         batch_size: int = 1,
-        timeout_s: float | None = 100.0,
+        deadline: Optional[float] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> list[float]:
-        """
-        Scores a query against a list of documents.
-        Returns a list of float scores in [0.0, 1.0] matching documents order.
-
-        Pairs run in micro-batches (one forward pass per batch, logits
-        gathered at each row's true final position — numerically identical to
-        single-pair scoring). `timeout_s` bounds total wall-clock time; on
-        expiry raises RerankError instead of hanging the HTTP worker past the
-        client's deadline. None disables the deadline (tests only).
-
-        batch_size default is 1: measured on M2 Pro (Sep 2026), rerank prompts
-        are long and variable-length, so padding waste cancels batching gains
-        entirely (0.4 pairs/s at batch 1, 4, and 8). The parameter stays for
-        uniform-length workloads where it may help.
-        """
+        """Synchronous score execution running on the GPU execution owner thread."""
         if not isinstance(query, str) or not query.strip():
             raise RerankError("Query must be a non-empty string.")
         if not isinstance(documents, list):
@@ -172,25 +206,24 @@ class MLXRerankAdapter:
         for i, doc in enumerate(documents):
             if not isinstance(doc, str):
                 raise RerankError(f"Document at index {i} is not a string (type={type(doc).__name__})")
+            if not doc.strip():
+                raise RerankError(f"Document at index {i} is empty or whitespace")
 
         if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1 or batch_size > 32:
             raise RerankError(f"batch_size must be an integer in [1, 32], got {batch_size}")
 
-        if self.model is None:
-            self.load()
+        if not self.is_loaded():
+            if self.model_manager is not None:
+                self.model_manager.ensure_loaded("rerank", deadline=deadline, cancel_event=cancel_event)
+            else:
+                self.load()
 
         t0 = time.time()
 
-        def _check_deadline():
-            if timeout_s is not None and (time.time() - t0) > timeout_s:
-                raise RerankError(
-                    f"Rerank deadline exceeded ({timeout_s}s for {len(documents)} documents)"
-                )
-
-        # Format + tokenize everything up front (CPU-side, cheap).
+        # Format and tokenize
         seqs = [self.raw_hf_tokenizer.encode(self._format_pair(query, doc)) for doc in documents]
         if any(len(s) == 0 for s in seqs):
-            raise RerankError("Empty token sequence after formatting (query/document too long?)")
+            raise RerankError("Empty token sequence after formatting")
 
         pad_id = self.raw_hf_tokenizer.pad_token_id
         if pad_id is None:
@@ -200,43 +233,95 @@ class MLXRerankAdapter:
 
         scores: list[float] = []
         for start in range(0, len(seqs), batch_size):
-            _check_deadline()
+            if cancel_event and cancel_event.is_set():
+                raise RequestCancelledError("Rerank request cancelled by client")
+            if deadline is not None and time.monotonic() > deadline:
+                raise DeadlineExceededError(
+                    f"Rerank deadline exceeded ({len(scores)}/{len(documents)} documents scored)"
+                )
+
             batch = seqs[start:start + batch_size]
             width = max(len(s) for s in batch)
             padded = [s + [pad_id] * (width - len(s)) for s in batch]
             lengths = [len(s) for s in batch]
             input_ids = mx.array(padded, dtype=mx.int32)
 
-            logits = self.model(input_ids)
-            # Gather each row's TRUE final position (padding must not shift it).
-            rows = mx.arange(len(batch))
-            cols = mx.array([ln - 1 for ln in lengths], dtype=mx.int32)
-            last_logits = logits[rows, cols]
-            diffs = last_logits[:, self.yes_token_id] - last_logits[:, self.no_token_id]
-            # Cast before NumPy handoff: quantized models emit bfloat16,
-            # which has no PEP 3118 buffer format and crashes np.array().
-            diffs_f32 = diffs.astype(mx.float32)
+            backbone = getattr(self.model, "model", getattr(self.model, "transformer", None))
+            lm_head = getattr(self.model, "lm_head", getattr(self.model, "head", None))
+
+            # Optimization: avoid full-vocab transient allocation where feasible
+            if backbone is not None and lm_head is not None and hasattr(lm_head, "weight"):
+                hidden_states = backbone(input_ids)
+                rows = mx.arange(len(batch))
+                cols = mx.array([ln - 1 for ln in lengths], dtype=mx.int32)
+                last_hidden = hidden_states[rows, cols]
+                w_yes = lm_head.weight[self.yes_token_id]
+                w_no = lm_head.weight[self.no_token_id]
+                diff_w = w_yes - w_no
+                diffs = mx.matmul(last_hidden, diff_w)
+                if hasattr(lm_head, "bias") and lm_head.bias is not None:
+                    diffs = diffs + (lm_head.bias[self.yes_token_id] - lm_head.bias[self.no_token_id])
+                diffs_f32 = diffs.astype(mx.float32)
+                del hidden_states, last_hidden, input_ids
+            else:
+                logits = self.model(input_ids)
+                rows = mx.arange(len(batch))
+                cols = mx.array([ln - 1 for ln in lengths], dtype=mx.int32)
+                last_logits = logits[rows, cols]
+                diffs = last_logits[:, self.yes_token_id] - last_logits[:, self.no_token_id]
+                diffs_f32 = diffs.astype(mx.float32)
+                del logits, last_logits, input_ids
+
             mx.eval(diffs_f32)
             diffs_np = np.array(diffs_f32, dtype=np.float64)
             scores.extend(float(1.0 / (1.0 + np.exp(-d))) for d in diffs_np)
 
-            del logits, last_logits, diffs, diffs_f32, input_ids
+            del diffs_f32
 
         latency_ms = (time.time() - t0) * 1000
         self.total_requests += 1
         self.total_pairs_scored += len(documents)
         self.total_latency_ms += latency_ms
+        if self.model_manager is not None:
+            self.model_manager.touch("rerank")
 
         return scores
 
+    def score_pairs(
+        self,
+        query: str,
+        documents: list[str],
+        batch_size: int = 1,
+        timeout_s: float | None = 100.0,
+        cancel_event: Optional[threading.Event] = None,
+        deadline: Optional[float] = None,
+    ) -> list[float]:
+        """Scores pairs via the executor queue (or sync if no executor)."""
+        now = time.monotonic()
+        to = timeout_s if timeout_s is not None else 300.0
+        dl = deadline if deadline is not None else (now + to)
+        rem = max(0.01, dl - time.monotonic())
+
+        if self.executor:
+            return self.executor.submit(
+                lambda: self.score_pairs_sync(
+                    query, documents, batch_size=batch_size,
+                    deadline=dl,
+                    cancel_event=cancel_event,
+                ),
+                priority=0,  # interactive priority
+                timeout_s=rem,
+                cancel_event=cancel_event,
+                description=f"Rerank {len(documents)} docs",
+            )
+        return self.score_pairs_sync(query, documents, batch_size=batch_size, deadline=dl, cancel_event=cancel_event)
+
     def warmup(self):
-        """Runs warmup inference passes."""
         print("[mlx-rerank] Running GPU warmup...")
-        self.score_pairs("warmup query", ["warmup document"])
+        self.score_pairs("warmup query", ["warmup document"], timeout_s=30.0)
         print("[mlx-rerank] Warmup complete ✓")
 
     def get_descriptor(self) -> dict[str, Any]:
-        """Returns the canonical rerank descriptor."""
         return {
             "version": 1,
             "backend": "mlx",
@@ -248,3 +333,14 @@ class MLXRerankAdapter:
             "yesTokenId": self.yes_token_id,
             "noTokenId": self.no_token_id,
         }
+
+    def shutdown(self):
+        if self.executor and hasattr(self.executor, "is_owner_thread") and self.executor.is_owner_thread():
+            self.unload()
+        elif self.executor and hasattr(self.executor, "is_alive") and self.executor.is_alive():
+            try:
+                self.executor.submit(self.unload, priority=0, timeout_s=10.0, description="Unload rerank")
+            except Exception:
+                self.unload()
+        else:
+            self.unload()

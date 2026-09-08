@@ -36,7 +36,7 @@ export interface ResolvedEmbeddingConfig {
 
 export const DEFAULT_GGUF_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-Q8_0.gguf";
 export const DEFAULT_MLX_URL = "http://127.0.0.1:8787";
-export const DEFAULT_MLX_TIMEOUT_MS = 60_000;
+export const DEFAULT_MLX_TIMEOUT_MS = 300_000;
 export const DEFAULT_MLX_CONCURRENCY = 2;
 
 /**
@@ -74,7 +74,7 @@ export function resolveEmbeddingConfig(options?: EmbeddingConfigOptions): Resolv
   }
 
   // 4. MLX URL: caller options > env > port env > default
-  let mlxUrl = options?.mlxUrl || process.env.QMD_MLX_EMBED_URL;
+  let mlxUrl = options?.mlxUrl ?? process.env.QMD_MLX_EMBED_URL;
   if (!mlxUrl) {
     const port = process.env.MLX_EMBED_PORT || "8787";
     mlxUrl = `http://127.0.0.1:${port}`;
@@ -97,10 +97,14 @@ export function resolveEmbeddingConfig(options?: EmbeddingConfigOptions): Resolv
   }
   if (mlxConcurrency === undefined) mlxConcurrency = DEFAULT_MLX_CONCURRENCY;
 
-  // 7. MLX Binary preference
-  let mlxBinary = options?.mlxBinary ?? true;
-  if (process.env.QMD_MLX_BINARY !== undefined) {
+  // 7. MLX Binary preference (caller options > env > default true)
+  let mlxBinary: boolean;
+  if (options?.mlxBinary !== undefined) {
+    mlxBinary = options.mlxBinary;
+  } else if (process.env.QMD_MLX_BINARY !== undefined) {
     mlxBinary = process.env.QMD_MLX_BINARY !== "0" && process.env.QMD_MLX_BINARY !== "false";
+  } else {
+    mlxBinary = true;
   }
 
   // 8. Fail-closed: true by default when MLX is explicitly chosen

@@ -21,6 +21,36 @@ def test_dynamic_yes_no_token_resolution():
     assert adapter.yes_token_id != adapter.no_token_id
 
 
+def test_rerank_token_id_resolution_suffix_context():
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter
+    adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
+    tok = adapter.raw_hf_tokenizer
+    suffix = adapter.THINK_SUFFIX
+    t_base = tok.encode(suffix, add_special_tokens=False)
+    t_yes = tok.encode(suffix + "yes", add_special_tokens=False)
+    t_no = tok.encode(suffix + "no", add_special_tokens=False)
+    assert len(t_yes) == len(t_base) + 1
+    assert len(t_no) == len(t_base) + 1
+    expected_yes = t_yes[-1]
+    expected_no = t_no[-1]
+    assert adapter.yes_token_id == expected_yes
+    assert adapter.no_token_id == expected_no
+    assert adapter.yes_token_id != adapter.no_token_id
+
+
+def test_rerank_token_id_resolution_ambiguity_raises():
+    from unittest.mock import MagicMock
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
+    adapter = MLXRerankAdapter(model_name="fake-rerank", lazy_load=True)
+    fake_tok = MagicMock()
+    # Mock returning identical tokens for yes and no
+    fake_tok.encode.return_value = [100]
+    adapter.raw_hf_tokenizer = fake_tok
+    adapter.model = MagicMock()
+    with pytest.raises(RerankError, match="Ambiguous or identical"):
+        adapter._resolve_token_ids()
+
+
 def test_rerank_score_ordering_and_determinism():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
@@ -124,17 +154,18 @@ def test_rerank_batch_equivalence():
 
 def test_rerank_deadline():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
+    from scripts.qmd_mlx.protocol import DeadlineExceededError
     adapter = MLXRerankAdapter(model_name=LOCAL_4B)
 
-    with pytest.raises(RerankError, match="[Dd]eadline"):
+    with pytest.raises((RerankError, DeadlineExceededError), match="[Dd]eadline"):
         adapter.score_pairs("query", ["doc one", "doc two"], timeout_s=-1)
 
     with pytest.raises(RerankError, match="batch_size"):
         adapter.score_pairs("query", ["doc"], batch_size=0)
 
 
-def test_rerank_truncation_preserves_query():
-    from scripts.qmd_mlx.rerank import MLXRerankAdapter
+def test_rerank_oversize_raises_error():
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
     adapter = MLXRerankAdapter(
         model_name="mlx-community/Qwen3-Reranker-4B-mxfp8",
         max_length=512,
@@ -143,7 +174,6 @@ def test_rerank_truncation_preserves_query():
     query = "Critical query terms that must not be truncated"
     huge_doc = "Very repetitive long document content. " * 500
 
-    # Should not raise context overflow error — documents are truncated safely
-    scores = adapter.score_pairs(query, [huge_doc])
-    assert len(scores) == 1
-    assert np.isfinite(scores[0])
+    # Explicit oversize error — no silent truncation
+    with pytest.raises(RerankError, match="exceeds max safe budget"):
+        adapter.score_pairs(query, [huge_doc])

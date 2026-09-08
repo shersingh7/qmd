@@ -403,6 +403,11 @@ export type LlamaCppConfig = {
    */
   mlxFallback?: boolean;
   /**
+   * Strict all-MLX mode: disables all GGUF fallbacks across embed, rerank, and expand.
+   * Hard-fails closed on daemon unreachability or missing models.
+   */
+  strictMlx?: boolean;
+  /**
    * MLX concurrent request limit (default: 2). Increase to 3-4 if embedding
    * throughput is bottlenecked on network latency.
    */
@@ -423,8 +428,8 @@ export type LlamaCppConfig = {
   /**
    * Whether to dispose models on inactivity (default: false).
    *
-   * Keeping models loaded avoids repeated VRAM thrash; set to true only if you need aggressive
-   * memory reclaim.
+   * By default, only contexts are disposed to balance memory efficiency with performance.
+   * Set to true to fully unload model weights from VRAM after inactivity.
    */
   disposeModelsOnInactivity?: boolean;
 };
@@ -508,6 +513,11 @@ export class LlamaCpp implements LLM {
       mlxConcurrency: config.mlxConcurrency,
     });
 
+    const isStrictMlx =
+      process.env.QMD_STRICT_MLX === '1' ||
+      config.strictMlx === true ||
+      (resolved.backend === 'mlx' && config.mlxFallback === false);
+
     this.embedBackend = resolved.backend;
     this.mlxUrlOverride = resolved.mlxUrl;
     // DEPRECATED (no-op): the daemon serves pre-quantized weights, so there is
@@ -521,10 +531,19 @@ export class LlamaCpp implements LLM {
       );
     }
     this.mlxConcurrency = resolved.mlxConcurrency;
-    this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
-    this.mlxFallback = config.mlxFallback ?? true;
-    this.mlxRerankFallback = (process.env.QMD_MLX_RERANK_FALLBACK ?? '1') !== '0';
-    this.mlxExpandFallback = (process.env.QMD_MLX_EXPAND_FALLBACK ?? '1') !== '0';
+
+    if (isStrictMlx) {
+      this.failClosed = true;
+      this.mlxFallback = false;
+      this.mlxRerankFallback = false;
+      this.mlxExpandFallback = false;
+    } else {
+      this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
+      this.mlxFallback = config.mlxFallback ?? true;
+      this.mlxRerankFallback = (process.env.QMD_MLX_RERANK_FALLBACK ?? '1') !== '0';
+      this.mlxExpandFallback = (process.env.QMD_MLX_EXPAND_FALLBACK ?? '1') !== '0';
+    }
+
     this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || (this.embedBackend === 'mlx' ? resolved.model : DEFAULT_EMBED_MODEL);
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;

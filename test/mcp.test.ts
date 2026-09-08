@@ -86,6 +86,31 @@ function initTestDatabase(db: Database): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS content_chunk_expectations (
+      hash TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      total_chunks INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (hash, strategy)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS indexing_checkpoints (
+      job_id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL,
+      docs_total INTEGER NOT NULL,
+      docs_completed INTEGER NOT NULL,
+      chunks_total INTEGER NOT NULL,
+      chunks_committed INTEGER NOT NULL,
+      last_hash TEXT,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
       name, body,
       content='documents',

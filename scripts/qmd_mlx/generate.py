@@ -1,16 +1,19 @@
 """
 generate.py — MLX-native Query Expansion (Generation) Adapter
-
-Wraps mlx-lm generation for QMD query expansion. Shares the same bounded
-execution-owner discipline as the embedding and rerank adapters: all forward
-passes run on a single dedicated worker thread, one model resident.
 """
+
+from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import Future
-from queue import Queue
 from typing import Any, Optional
+
+from .protocol import (
+    DeadlineExceededError,
+    InvalidInputError,
+    ModelUnavailableError,
+    RequestCancelledError,
+)
 
 try:
     import mlx.core as mx
@@ -21,7 +24,7 @@ except ImportError:
     _MLX_AVAILABLE = False
 
 
-class GenerateError(ValueError):
+class GenerateError(InvalidInputError):
     """Raised when generation input validation or inference fails."""
     pass
 
@@ -39,14 +42,18 @@ class MLXGenerateAdapter:
         max_context: int = 4096,
         max_new_tokens: int = 600,
         lazy_load: bool = False,
+        executor: Optional[Any] = None,
+        model_manager: Optional[Any] = None,
     ):
         if not _MLX_AVAILABLE:
-            raise GenerateError("MLX or mlx-lm is not installed.")
+            raise ModelUnavailableError("MLX or mlx-lm is not installed.")
 
         self.model_name = model_name
         self.revision = revision
         self.max_context = max_context
         self.max_new_tokens = max_new_tokens
+        self.executor = executor
+        self.model_manager = model_manager
 
         self.model: Any = None
         self.tokenizer: Any = None
@@ -56,35 +63,32 @@ class MLXGenerateAdapter:
         self.total_tokens_generated: int = 0
         self.total_latency_ms: float = 0.0
 
-        self._work_queue: Queue = Queue()
-        self._ready_event = threading.Event()
-        self._init_error: Optional[Exception] = None
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
-        self._ready_event.wait()
-        if self._init_error is not None:
-            raise self._init_error
+        if not lazy_load and self.model_manager is None:
+            self.load()
 
-        if not lazy_load:
-            # Model was already loaded synchronously on the worker via
-            # _worker_loop's _load_on_worker; nothing further needed.
-            pass
+    def load_via_manager(self, timeout_s: float = 120.0):
+        if self.model_manager is not None:
+            self.model_manager.ensure_loaded("generate", timeout_s=timeout_s)
+        else:
+            self.load()
 
-    # ------------------------------------------------------------------ #
-    # Execution-owner plumbing (same discipline as embedding runtime)
-    # ------------------------------------------------------------------ #
+    def is_loaded(self) -> bool:
+        return self.model is not None and self.raw_hf_tokenizer is not None
 
     def _get_active_memory_mb(self) -> float:
         try:
             if hasattr(mx, "get_active_memory"):
                 return mx.get_active_memory() / (1024 * 1024)
-            if hasattr(mx.metal, "get_active_memory"):
+            if hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
                 return mx.metal.get_active_memory() / (1024 * 1024)
         except Exception:
             pass
         return 0.0
 
-    def _load_on_worker(self):
+    def load(self):
+        if self.model is not None:
+            return
+
         t0 = time.time()
         mem_before = self._get_active_memory_mb()
         try:
@@ -93,46 +97,42 @@ class MLXGenerateAdapter:
             self.tokenizer = tokenizer_wrap
             self.raw_hf_tokenizer = getattr(tokenizer_wrap, "_tokenizer", tokenizer_wrap)
         except Exception as exc:
-            raise GenerateError(f"Failed to load generation model '{self.model_name}': {exc}")
+            raise ModelUnavailableError(f"Failed to load generation model '{self.model_name}': {exc}")
+
         self.model_memory_mb = max(0.0, self._get_active_memory_mb() - mem_before)
         print(
             f"[mlx-generate] Loaded '{self.model_name}' ✓ ({self.model_memory_mb:.1f}MB Metal) "
             f"in {time.time() - t0:.2f}s"
         )
 
-    def _worker_loop(self):
-        try:
-            self._load_on_worker()
-        except Exception as exc:
-            self._init_error = exc
-            self._ready_event.set()
-            return
-        self._ready_event.set()
+    def unload(self):
+        if self.model is not None:
+            del self.model
+            self.model = None
+        self.model_memory_mb = 0.0
 
-        while True:
-            job = self._work_queue.get()
-            if job is None:
-                break
-            prompt, max_tokens, temperature, response_future = job
-            t0 = time.time()
-            try:
-                text, tokens_out = self._generate_sync(prompt, max_tokens, temperature)
-                self.total_requests += 1
-                self.total_tokens_generated += tokens_out
-                self.total_latency_ms += (time.time() - t0) * 1000
-                response_future.set_result(text)
-            except Exception as exc:
-                response_future.set_exception(exc)
-            finally:
-                self._work_queue.task_done()
+    def _generate_sync(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        deadline: Optional[float] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> tuple[str, int]:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise GenerateError("Prompt must be a non-empty string.")
 
-    # ------------------------------------------------------------------ #
-    # Sync inference (owner thread only)
-    # ------------------------------------------------------------------ #
+        if cancel_event and cancel_event.is_set():
+            raise RequestCancelledError("Generation request cancelled")
+        if deadline is not None and time.monotonic() > deadline:
+            raise DeadlineExceededError("Generation request deadline exceeded before start")
 
-    def _generate_sync(self, prompt: str, max_tokens: int, temperature: float) -> tuple[str, int]:
-        # Qwen3 thinking models: strip any literal thinking blocks from output
-        # and remove the no-op thinking preamble when present.
+        if not self.is_loaded():
+            if self.model_manager is not None:
+                self.model_manager.ensure_loaded("generate", deadline=deadline, cancel_event=cancel_event)
+            else:
+                self.load()
+
         formatted_prompt = prompt
         chat_formatted = False
         if hasattr(self.raw_hf_tokenizer, "apply_chat_template"):
@@ -148,28 +148,40 @@ class MLXGenerateAdapter:
         if not chat_formatted:
             formatted_prompt = prompt
 
-        # Truncate prompt tokens to fit max_context (keep tail: instructions
-        # live at the end of QMD expansion prompts).
         toks = self.raw_hf_tokenizer.encode(formatted_prompt)
         if len(toks) > self.max_context - self.max_new_tokens:
-            keep = self.max_context - self.max_new_tokens
-            formatted_prompt = self.raw_hf_tokenizer.decode(toks[-keep:])
+            raise GenerateError(
+                f"Prompt length ({len(toks)} tokens) exceeds max context budget ({self.max_context - self.max_new_tokens} tokens)"
+            )
 
         sampler = make_sampler(temp=temperature)
-        text = mlx_lm.generate(
-            self.model,
-            self.tokenizer,
-            prompt=formatted_prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
-        )
+        pieces = []
+        if hasattr(mlx_lm, "stream_generate"):
+            for response in mlx_lm.stream_generate(
+                self.model,
+                self.tokenizer,
+                prompt=formatted_prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+            ):
+                if cancel_event and cancel_event.is_set():
+                    raise RequestCancelledError("Generation request cancelled")
+                if deadline is not None and time.monotonic() > deadline:
+                    raise DeadlineExceededError("Generation request deadline exceeded")
+                pieces.append(getattr(response, "text", str(response)))
+            text = "".join(pieces)
+        else:
+            text = mlx_lm.generate(
+                self.model,
+                self.tokenizer,
+                prompt=formatted_prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+            )
         text = text if isinstance(text, str) else str(text)
 
-        # Strip leading thinking-block artifacts the 1.7B emits when the
-        # chat template leaves the thinking channel open. Markers use explicit
-        # escapes to stay intact in source.
-        OPEN = "<think>"          # literal open tag
-        CLOSE = "</think>"         # literal close tag
+        OPEN = "<think>"
+        CLOSE = "</think>"
         NL2 = "\n\n"
         if text.startswith(NL2):
             text = text[len(NL2):]
@@ -181,11 +193,10 @@ class MLXGenerateAdapter:
                 text = text[len(OPEN):]
         text = text.strip()
 
-        return text, max(0, len(text))
+        if self.model_manager is not None:
+            self.model_manager.touch("generate")
 
-    # ------------------------------------------------------------------ #
-    # Public API (thread-safe, submits to owner queue)
-    # ------------------------------------------------------------------ #
+        return text, max(0, len(text))
 
     def submit_generate(
         self,
@@ -193,6 +204,8 @@ class MLXGenerateAdapter:
         max_tokens: Optional[int] = None,
         temperature: float = 0.0,
         timeout: float = 120.0,
+        cancel_event: Optional[threading.Event] = None,
+        deadline: Optional[float] = None,
     ) -> str:
         if not isinstance(prompt, str) or not prompt.strip():
             raise GenerateError("Prompt must be a non-empty string.")
@@ -200,16 +213,31 @@ class MLXGenerateAdapter:
         if not isinstance(mt, int) or mt <= 0 or mt > 4096:
             raise GenerateError(f"max_tokens must be an integer in (0, 4096], got {mt}")
 
-        future: Future = Future()
-        self._work_queue.put((prompt, mt, temperature, future))
-        return future.result(timeout=timeout)
+        now = time.monotonic()
+        dl = deadline if deadline is not None else (now + timeout)
+        rem = max(0.01, dl - time.monotonic())
+
+        if self.executor:
+            return self.executor.submit(
+                lambda: self._generate_sync(
+                    prompt, mt, temperature,
+                    deadline=dl,
+                    cancel_event=cancel_event,
+                )[0],
+                priority=0,  # interactive priority
+                timeout_s=rem,
+                cancel_event=cancel_event,
+                description="Generate expansion",
+            )
+
+        text, _ = self._generate_sync(prompt, mt, temperature, deadline=dl, cancel_event=cancel_event)
+        return text
 
     def generate(self, prompt: str, max_tokens: Optional[int] = None, temperature: float = 0.0) -> str:
-        """Synchronous convenience wrapper."""
         return self.submit_generate(prompt, max_tokens=max_tokens, temperature=temperature)
 
     def warmup(self):
-        self.submit_generate("/no_think warmup", max_tokens=4)
+        self.submit_generate("/no_think warmup", max_tokens=4, timeout=30.0)
         print("[mlx-generate] Warmup complete ✓")
 
     def get_descriptor(self) -> dict[str, Any]:
@@ -224,5 +252,12 @@ class MLXGenerateAdapter:
         }
 
     def shutdown(self):
-        self._work_queue.put(None)
-        self._worker_thread.join(timeout=5.0)
+        if self.executor and hasattr(self.executor, "is_owner_thread") and self.executor.is_owner_thread():
+            self.unload()
+        elif self.executor and hasattr(self.executor, "is_alive") and self.executor.is_alive():
+            try:
+                self.executor.submit(self.unload, priority=0, timeout_s=10.0, description="Unload generate")
+            except Exception:
+                self.unload()
+        else:
+            self.unload()

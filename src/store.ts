@@ -743,6 +743,7 @@ function initializeDatabase(db: Database): void {
   }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA busy_timeout = 5000");
 
   // Drop legacy tables that are now managed in YAML
   db.exec(`DROP TABLE IF EXISTS path_contexts`);
@@ -805,6 +806,17 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
+  // Expected chunk counts per content hash to avoid full-corpus rechunk on resume
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_chunk_expectations (
+      hash TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      total_chunks INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (hash, strategy)
+    )
+  `);
+
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
     CREATE TABLE IF NOT EXISTS store_collections (
@@ -823,6 +835,22 @@ function initializeDatabase(db: Database): void {
     CREATE TABLE IF NOT EXISTS store_config (
       key TEXT PRIMARY KEY,
       value TEXT
+    )
+  `);
+
+  // Checkpoints table for durable indexing
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS indexing_checkpoints (
+      job_id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL,
+      docs_total INTEGER NOT NULL,
+      docs_completed INTEGER NOT NULL,
+      chunks_total INTEGER NOT NULL,
+      chunks_committed INTEGER NOT NULL,
+      last_hash TEXT,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )
   `);
 
@@ -1190,6 +1218,7 @@ export type Store = {
   getHashesForEmbedding: () => { hash: string; body: string; path: string }[];
   clearAllEmbeddings: () => void;
   insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string) => void;
+  getEmbeddingDescriptor?: () => Promise<EmbeddingDescriptor | undefined> | EmbeddingDescriptor | undefined;
 };
 
 // =============================================================================
@@ -1324,10 +1353,20 @@ export type EmbedProgress = {
   errors: number;
 };
 
+export type EmbedOutcomeStatus = 'complete' | 'partial' | 'failed' | 'cancelled';
+
 export type EmbedResult = {
+  status: EmbedOutcomeStatus;
   docsProcessed: number;
-  chunksEmbedded: number;
-  errors: number;
+  docsSelected: number;
+  chunksAttempted: number;
+  chunksCommitted: number;
+  chunksEmbedded: number; // alias for chunksCommitted for backwards-compatibility
+  chunksFailed: number;
+  chunksSkipped: number;
+  chunksPending: number;
+  errors: number; // alias for chunksFailed for backwards-compatibility
+  firstFailureReason?: string;
   durationMs: number;
 };
 
@@ -1336,8 +1375,10 @@ export type EmbedOptions = {
   model?: string;
   maxDocsPerBatch?: number;
   maxBatchBytes?: number;
+  maxDuration?: number;
   chunkStrategy?: ChunkStrategy;
   onProgress?: (info: EmbedProgress) => void;
+  signal?: AbortSignal;
 };
 
 type PendingEmbeddingDoc = {
@@ -1375,13 +1416,58 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
   };
 }
 
+function ensureExpectationTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_chunk_expectations (
+      hash TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      total_chunks INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (hash, strategy)
+    )
+  `);
+}
+
+function ensureCheckpointTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS indexing_checkpoints (
+      job_id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL,
+      docs_total INTEGER NOT NULL,
+      docs_completed INTEGER NOT NULL,
+      chunks_total INTEGER NOT NULL,
+      chunks_committed INTEGER NOT NULL,
+      last_hash TEXT,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}
+
 function getPendingEmbeddingDocs(db: Database): PendingEmbeddingDoc[] {
+  ensureExpectationTable(db);
+  ensureCheckpointTable(db);
   return db.prepare(`
     SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    LEFT JOIN (
+      SELECT hash, COUNT(*) as cnt FROM content_vectors GROUP BY hash
+    ) v ON d.hash = v.hash
+    LEFT JOIN content_chunk_expectations e ON d.hash = e.hash
+    WHERE d.active = 1 AND (
+      v.cnt IS NULL
+      OR v.cnt = 0
+      OR (e.total_chunks IS NOT NULL AND v.cnt < e.total_chunks)
+      OR (
+        EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='indexing_checkpoints'
+        ) AND EXISTS (
+          SELECT 1 FROM indexing_checkpoints WHERE status IN ('in_progress', 'paused')
+        )
+      )
+    )
     GROUP BY d.hash
     ORDER BY MIN(d.path)
   `).all() as PendingEmbeddingDoc[];
@@ -1455,191 +1541,404 @@ export async function generateEmbeddings(
   }
 
   const docsToEmbed = getPendingEmbeddingDocs(db);
-
-  if (docsToEmbed.length === 0) {
-    return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
-  }
-  const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
+
+  if (totalDocs === 0) {
+    return {
+      status: 'complete',
+      docsProcessed: 0,
+      docsSelected: 0,
+      chunksAttempted: 0,
+      chunksCommitted: 0,
+      chunksEmbedded: 0,
+      chunksFailed: 0,
+      chunksSkipped: 0,
+      chunksPending: 0,
+      errors: 0,
+      durationMs: 0,
+    };
+  }
+
+  const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
 
   // Use store's LlamaCpp or global singleton, wrapped in a session
   const llm = getLlm(store);
   const embedModelUri = llm.embedModelName;
 
-  // Create a session manager for this llm instance
-  const result = await withLLMSessionForLlm(llm, async (session) => {
-    let chunksEmbedded = 0;
-    let errors = 0;
-    let bytesProcessed = 0;
-    let totalChunks = 0;
-    let vectorTableInitialized = false;
-    const BATCH_SIZE = 32;
-    const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
+  try {
+    const sessionResult = await withLLMSessionForLlm(llm, async (session) => {
+      let chunksAttempted = 0;
+      let chunksCommitted = 0;
+      let chunksFailed = 0;
+      let chunksSkipped = 0;
+      let firstFailureReason: string | undefined = undefined;
+      let bytesProcessed = 0;
+      let totalChunks = 0;
+      let vectorTableInitialized = false;
+      const BATCH_SIZE = 32;
+      const batches = buildEmbeddingBatches(docsToEmbed, maxDocsPerBatch, maxBatchBytes);
 
-    let descriptor: EmbeddingDescriptor | undefined;
-    if (typeof session.getDescriptor === "function") {
-      try {
-        descriptor = (await session.getDescriptor()) ?? undefined;
-      } catch {}
-    }
+      const docChunksTotal = new Map<string, number>();
+      const docChunksCommitted = new Map<string, number>();
 
-    for (const batchMeta of batches) {
-      // Abort early if session has been invalidated
-      if (!session.isValid) {
-        console.warn(`⚠ Session expired — skipping remaining document batches`);
-        break;
+      const strategy = options?.chunkStrategy ?? "regex";
+
+      // Prepared statements reused across batches and iterations
+      const getExpectationStmt = db.prepare(`
+        SELECT total_chunks FROM content_chunk_expectations WHERE hash = ? AND strategy = ?
+      `);
+      const setExpectationStmt = db.prepare(`
+        INSERT OR REPLACE INTO content_chunk_expectations (hash, strategy, total_chunks, created_at) VALUES (?, ?, ?, ?)
+      `);
+      const getExistingSeqsStmt = db.prepare(`
+        SELECT seq FROM content_vectors WHERE hash = ? AND model = ?
+      `);
+      const insertContentVectorStmt = db.prepare(`
+        INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, ?, ?, ?, ?)
+      `);
+
+      let deleteVecStmt: any = null;
+      let insertVecStmt: any = null;
+      const getVecStmts = () => {
+        if (!deleteVecStmt) {
+          deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+          insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+        }
+        return { deleteVecStmt, insertVecStmt };
+      };
+
+      const insertEmbeddingPrepared = (hash: string, seq: number, pos: number, emb: Float32Array, m: string, timeStr: string) => {
+        const hashSeq = `${hash}_${seq}`;
+        insertContentVectorStmt.run(hash, seq, pos, m, timeStr);
+        const stmts = getVecStmts();
+        stmts.deleteVecStmt.run(hashSeq);
+        stmts.insertVecStmt.run(hashSeq, emb);
+      };
+
+      let descriptor: EmbeddingDescriptor | undefined;
+      if (typeof session.getDescriptor === "function") {
+        try {
+          descriptor = (await session.getDescriptor()) ?? undefined;
+        } catch {}
       }
 
-      const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
-      const batchChunks: ChunkItem[] = [];
-      const batchBytes = batchMeta.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
+      if (descriptor) {
+        store.ensureVecTable(descriptor.outputDimensions, descriptor);
+        vectorTableInitialized = true;
+      } else {
+        const existingTable = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
+        if (existingTable) {
+          const match = existingTable.sql.match(/float\[(\d+)\]/);
+          if (match?.[1]) {
+            vectorTableInitialized = true;
+          }
+        }
+      }
 
-      for (const doc of batchDocs) {
-        if (!doc.body.trim()) continue;
+      for (const batchMeta of batches) {
+        if (!session.isValid || session.signal.aborted || options?.signal?.aborted) {
+          if (!firstFailureReason) {
+            firstFailureReason = (session.signal.aborted || options?.signal?.aborted) ? "Embedding aborted by signal" : "Session expired";
+          }
+          break;
+        }
 
-        const title = extractTitle(doc.body, doc.path);
-        const chunks = await chunkDocumentByTokens(
-          doc.body,
-          undefined, undefined, undefined,
-          doc.path,
-          options?.chunkStrategy,
-          session.signal,
-        );
+        const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
+        const batchChunks: ChunkItem[] = [];
+        const batchBytes = batchMeta.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
 
-        for (let seq = 0; seq < chunks.length; seq++) {
-          batchChunks.push({
-            hash: doc.hash,
-            title,
-            text: chunks[seq]!.text,
-            seq,
-            pos: chunks[seq]!.pos,
-            tokens: chunks[seq]!.tokens,
-            bytes: encoder.encode(chunks[seq]!.text).length,
+        for (const doc of batchDocs) {
+          if (!doc.body.trim()) continue;
+
+          const existingRows = getExistingSeqsStmt.all(doc.hash, model) as { seq: number }[];
+          const existingSeqs = new Set(existingRows.map(r => r.seq));
+
+          const expRow = getExpectationStmt.get(doc.hash, strategy) as { total_chunks: number } | undefined;
+          if (expRow && expRow.total_chunks > 0 && existingSeqs.size >= expRow.total_chunks) {
+            // Avoid full-corpus re-chunk on resume: chunk count expectation already fully satisfied
+            docChunksTotal.set(doc.hash, expRow.total_chunks);
+            docChunksCommitted.set(doc.hash, existingSeqs.size);
+            continue;
+          }
+
+          const title = extractTitle(doc.body, doc.path);
+          const chunks = await chunkDocumentByTokens(
+            doc.body,
+            undefined, undefined, undefined,
+            doc.path,
+            options?.chunkStrategy,
+            session.signal,
+          );
+
+          setExpectationStmt.run(doc.hash, strategy, chunks.length, now);
+
+          docChunksTotal.set(doc.hash, chunks.length);
+          docChunksCommitted.set(doc.hash, existingSeqs.size);
+
+          for (let seq = 0; seq < chunks.length; seq++) {
+            if (!existingSeqs.has(seq)) {
+              batchChunks.push({
+                hash: doc.hash,
+                title,
+                text: chunks[seq]!.text,
+                seq,
+                pos: chunks[seq]!.pos,
+                tokens: chunks[seq]!.tokens,
+                bytes: encoder.encode(chunks[seq]!.text).length,
+              });
+            }
+          }
+        }
+
+        totalChunks += batchChunks.length;
+
+        if (batchChunks.length === 0) {
+          bytesProcessed += batchBytes;
+          options?.onProgress?.({
+            chunksEmbedded: chunksCommitted,
+            totalChunks,
+            bytesProcessed,
+            totalBytes,
+            errors: chunksFailed,
+          });
+          continue;
+        }
+
+        if (!vectorTableInitialized) {
+          if (descriptor) {
+            store.ensureVecTable(descriptor.outputDimensions, descriptor);
+            vectorTableInitialized = true;
+          } else {
+            const firstChunk = batchChunks[0]!;
+            const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
+            const firstResult = await session.embed(firstText, { model });
+            if (!firstResult) {
+              throw new Error("Failed to get embedding dimensions from first chunk");
+            }
+            store.ensureVecTable(firstResult.embedding.length);
+            vectorTableInitialized = true;
+          }
+        }
+
+        const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
+        let batchChunkBytesProcessed = 0;
+
+        for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
+          if (!session.isValid || session.signal.aborted || options?.signal?.aborted) {
+            const remaining = batchChunks.length - batchStart;
+            chunksSkipped += remaining;
+            if (!firstFailureReason) {
+              firstFailureReason = (session.signal.aborted || options?.signal?.aborted) ? "Embedding aborted by signal" : "Session expired";
+            }
+            break;
+          }
+
+          // Abort early if error rate is too high (>80% of attempted chunks failed)
+          if (chunksAttempted >= BATCH_SIZE && chunksFailed > chunksAttempted * 0.8) {
+            const remaining = batchChunks.length - batchStart;
+            chunksSkipped += remaining;
+            if (!firstFailureReason) {
+              firstFailureReason = `Error rate too high (${chunksFailed}/${chunksAttempted}) — aborting embedding`;
+            }
+            console.warn(`⚠ ${firstFailureReason}`);
+            break;
+          }
+
+          const batchEnd = Math.min(batchStart + BATCH_SIZE, batchChunks.length);
+          const chunkBatch = batchChunks.slice(batchStart, batchEnd);
+          chunksAttempted += chunkBatch.length;
+          const texts = chunkBatch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
+
+          let embeddings: (EmbeddingResult | null)[] | null = null;
+          let inferenceError: Error | null = null;
+
+          try {
+            embeddings = await session.embedBatch(texts, { model });
+          } catch (err) {
+            inferenceError = err instanceof Error ? err : new Error(String(err));
+          }
+
+          if (inferenceError || !embeddings || embeddings.every(e => e === null)) {
+            // Batch inference failed — try individual embeddings fallback with strict signal checks
+            if (!session.isValid || session.signal.aborted || options?.signal?.aborted) {
+              chunksFailed += chunkBatch.length;
+              if (!firstFailureReason) {
+                firstFailureReason = (session.signal.aborted || options?.signal?.aborted)
+                  ? "Embedding aborted by signal"
+                  : (inferenceError?.message || "Session invalid during batch embedding");
+              }
+            } else {
+              for (const chunk of chunkBatch) {
+                if (!session.isValid || session.signal.aborted || options?.signal?.aborted) {
+                  chunksSkipped++;
+                  if (!firstFailureReason) {
+                    firstFailureReason = (session.signal.aborted || options?.signal?.aborted) ? "Embedding aborted by signal" : "Session expired";
+                  }
+                  continue;
+                }
+
+                let singleRes: EmbeddingResult | null = null;
+                try {
+                  const text = formatDocForEmbedding(chunk.text, chunk.title, embedModelUri);
+                  singleRes = await session.embed(text, { model });
+                } catch (singleErr) {
+                  if (!firstFailureReason) {
+                    firstFailureReason = singleErr instanceof Error ? singleErr.message : String(singleErr);
+                  }
+                }
+
+                if (singleRes && singleRes.embedding && singleRes.embedding.length > 0) {
+                  let singleCommitted = false;
+                  db.exec("BEGIN IMMEDIATE");
+                  try {
+                    insertEmbeddingPrepared(chunk.hash, chunk.seq, chunk.pos, new Float32Array(singleRes.embedding), model, now);
+                    db.exec("COMMIT");
+                    singleCommitted = true;
+                  } catch (txErr) {
+                    try { db.exec("ROLLBACK"); } catch {}
+                    if (!firstFailureReason) {
+                      firstFailureReason = `Database error: ${txErr instanceof Error ? txErr.message : String(txErr)}`;
+                    }
+                  }
+                  if (singleCommitted) {
+                    chunksCommitted++;
+                    docChunksCommitted.set(chunk.hash, (docChunksCommitted.get(chunk.hash) || 0) + 1);
+                  } else {
+                    chunksFailed++;
+                  }
+                } else {
+                  chunksFailed++;
+                  if (!firstFailureReason) {
+                    firstFailureReason = `Chunk ${chunk.hash}:${chunk.seq} returned empty embedding`;
+                  }
+                }
+                batchChunkBytesProcessed += chunk.bytes;
+              }
+            }
+          } else {
+            // Batch inference succeeded. Stage database insertions and apply counters atomically on COMMIT
+            let stagedCommitted = 0;
+            let stagedFailed = 0;
+            const docIncrements = new Map<string, number>();
+            let txFailed = false;
+            let txErrorMsg = "";
+
+            db.exec("BEGIN IMMEDIATE");
+            try {
+              for (let i = 0; i < chunkBatch.length; i++) {
+                const chunk = chunkBatch[i]!;
+                const embedding = embeddings[i];
+                if (embedding && embedding.embedding && embedding.embedding.length > 0) {
+                  insertEmbeddingPrepared(chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
+                  stagedCommitted++;
+                  docIncrements.set(chunk.hash, (docIncrements.get(chunk.hash) || 0) + 1);
+                } else {
+                  stagedFailed++;
+                  if (!firstFailureReason) {
+                    firstFailureReason = `Chunk ${chunk.hash}:${chunk.seq} embedding was empty`;
+                  }
+                }
+                batchChunkBytesProcessed += chunk.bytes;
+              }
+              db.exec("COMMIT");
+            } catch (txErr) {
+              txFailed = true;
+              txErrorMsg = txErr instanceof Error ? txErr.message : String(txErr);
+              try { db.exec("ROLLBACK"); } catch {}
+            }
+
+            if (txFailed) {
+              // DB transaction failed (do not retry inference)
+              chunksFailed += chunkBatch.length;
+              if (!firstFailureReason) {
+                firstFailureReason = `Database write failed: ${txErrorMsg}`;
+              }
+            } else {
+              chunksCommitted += stagedCommitted;
+              chunksFailed += stagedFailed;
+              for (const [hash, count] of docIncrements.entries()) {
+                docChunksCommitted.set(hash, (docChunksCommitted.get(hash) || 0) + count);
+              }
+            }
+          }
+
+          const proportionalBytes = totalBatchChunkBytes === 0
+            ? batchBytes
+            : Math.min(batchBytes, Math.round((batchChunkBytesProcessed / totalBatchChunkBytes) * batchBytes));
+          options?.onProgress?.({
+            chunksEmbedded: chunksCommitted,
+            totalChunks,
+            bytesProcessed: bytesProcessed + proportionalBytes,
+            totalBytes,
+            errors: chunksFailed,
           });
         }
-      }
 
-      totalChunks += batchChunks.length;
-
-      if (batchChunks.length === 0) {
         bytesProcessed += batchBytes;
-        options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
-        continue;
-      }
-
-      if (!vectorTableInitialized) {
-        if (descriptor) {
-          store.ensureVecTable(descriptor.outputDimensions, descriptor);
-          vectorTableInitialized = true;
-        } else {
-          const firstChunk = batchChunks[0]!;
-          const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
-          const firstResult = await session.embed(firstText, { model });
-          if (!firstResult) {
-            throw new Error("Failed to get embedding dimensions from first chunk");
-          }
-          store.ensureVecTable(firstResult.embedding.length);
-          vectorTableInitialized = true;
-        }
-      }
-
-      const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
-      let batchChunkBytesProcessed = 0;
-
-      for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
-        // Abort early if session has been invalidated (e.g. max duration exceeded)
-        if (!session.isValid) {
-          const remaining = batchChunks.length - batchStart;
-          errors += remaining;
-          console.warn(`⚠ Session expired — skipping ${remaining} remaining chunks`);
-          break;
-        }
-
-        // Abort early if error rate is too high (>80% of processed chunks failed)
-        const processed = chunksEmbedded + errors;
-        if (processed >= BATCH_SIZE && errors > processed * 0.8) {
-          const remaining = batchChunks.length - batchStart;
-          errors += remaining;
-          console.warn(`⚠ Error rate too high (${errors}/${processed}) — aborting embedding`);
-          break;
-        }
-
-        const batchEnd = Math.min(batchStart + BATCH_SIZE, batchChunks.length);
-        const chunkBatch = batchChunks.slice(batchStart, batchEnd);
-        const texts = chunkBatch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title, embedModelUri));
-
-        try {
-          const embeddings = await session.embedBatch(texts, { model });
-
-          db.exec("BEGIN IMMEDIATE");
-          try {
-            for (let i = 0; i < chunkBatch.length; i++) {
-              const chunk = chunkBatch[i]!;
-              const embedding = embeddings[i];
-              if (embedding) {
-                insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
-                chunksEmbedded++;
-              } else {
-                errors++;
-              }
-              batchChunkBytesProcessed += chunk.bytes;
-            }
-            db.exec("COMMIT");
-          } catch (txErr) {
-            try { db.exec("ROLLBACK"); } catch {}
-            throw txErr;
-          }
-        } catch {
-          // Batch failed — try individual embeddings as fallback
-          // But skip if session is already invalid (avoids N doomed retries)
-          if (!session.isValid) {
-            errors += chunkBatch.length;
-            batchChunkBytesProcessed += chunkBatch.reduce((sum, c) => sum + c.bytes, 0);
-          } else {
-            for (const chunk of chunkBatch) {
-              try {
-                const text = formatDocForEmbedding(chunk.text, chunk.title, embedModelUri);
-                const result = await session.embed(text, { model });
-                if (result) {
-                  insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now);
-                  chunksEmbedded++;
-                } else {
-                  errors++;
-                }
-              } catch {
-                errors++;
-              }
-              batchChunkBytesProcessed += chunk.bytes;
-            }
-          }
-        }
-
-        const proportionalBytes = totalBatchChunkBytes === 0
-          ? batchBytes
-          : Math.min(batchBytes, Math.round((batchChunkBytesProcessed / totalBatchChunkBytes) * batchBytes));
         options?.onProgress?.({
-          chunksEmbedded,
+          chunksEmbedded: chunksCommitted,
           totalChunks,
-          bytesProcessed: bytesProcessed + proportionalBytes,
+          bytesProcessed,
           totalBytes,
-          errors,
+          errors: chunksFailed,
         });
       }
 
-      bytesProcessed += batchBytes;
-      options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors });
-    }
+      let fullyProcessedDocs = 0;
+      for (const [hash, total] of docChunksTotal.entries()) {
+        if (total > 0 && (docChunksCommitted.get(hash) ?? 0) >= total) {
+          fullyProcessedDocs++;
+        }
+      }
 
-    return { chunksEmbedded, errors };
-  }, { maxDuration: 120 * 60 * 1000, name: 'generateEmbeddings' });
+      let status: EmbedOutcomeStatus;
+      if (session.signal?.aborted || options?.signal?.aborted) {
+        status = 'cancelled';
+      } else if (chunksFailed === 0 && chunksSkipped === 0) {
+        status = 'complete';
+      } else if (chunksCommitted > 0) {
+        status = 'partial';
+      } else {
+        status = 'failed';
+      }
 
-  return {
-    docsProcessed: totalDocs,
-    chunksEmbedded: result.chunksEmbedded,
-    errors: result.errors,
-    durationMs: Date.now() - startTime,
-  };
+      return {
+        status,
+        docsProcessed: fullyProcessedDocs,
+        docsSelected: totalDocs,
+        chunksAttempted,
+        chunksCommitted,
+        chunksEmbedded: chunksCommitted,
+        chunksFailed,
+        chunksSkipped,
+        chunksPending: totalChunks > 0 ? Math.max(0, totalChunks - chunksCommitted - chunksFailed - chunksSkipped) : 0,
+        errors: chunksFailed,
+        firstFailureReason,
+      };
+    }, { maxDuration: options?.maxDuration ?? 0, name: 'generateEmbeddings', signal: options?.signal });
+
+    return {
+      ...sessionResult,
+      durationMs: Date.now() - startTime,
+    };
+  } catch (fatalErr) {
+    const isAborted = Boolean(options?.signal?.aborted);
+    return {
+      status: isAborted ? 'cancelled' : 'failed',
+      docsProcessed: 0,
+      docsSelected: totalDocs,
+      chunksAttempted: 0,
+      chunksCommitted: 0,
+      chunksEmbedded: 0,
+      chunksFailed: 0,
+      chunksSkipped: 0,
+      chunksPending: totalDocs,
+      errors: 1,
+      firstFailureReason: isAborted ? "Embedding aborted by signal" : (fatalErr instanceof Error ? fatalErr.message : String(fatalErr)),
+      durationMs: Date.now() - startTime,
+    };
+  }
 }
 
 /**
@@ -1723,6 +2022,18 @@ export function createStore(dbPath?: string): Store {
     getHashesForEmbedding: () => getHashesForEmbedding(db),
     clearAllEmbeddings: () => clearAllEmbeddings(db),
     insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string) => insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt),
+    getEmbeddingDescriptor: async () => {
+      const llmInstance = getLlm(store);
+      if (typeof (llmInstance as any).getDescriptor === "function") {
+        const desc = await (llmInstance as any).getDescriptor();
+        return desc ?? undefined;
+      }
+      if (typeof (llmInstance as any).getEmbeddingDescriptor === "function") {
+        const desc = await (llmInstance as any).getEmbeddingDescriptor();
+        return desc ?? undefined;
+      }
+      return undefined;
+    },
   };
 
   return store;
@@ -1923,11 +2234,24 @@ export type IndexStatus = {
 // =============================================================================
 
 export function getHashesNeedingEmbedding(db: Database): number {
+  ensureExpectationTable(db);
+  ensureCheckpointTable(db);
   const result = db.prepare(`
     SELECT COUNT(DISTINCT d.hash) as count
     FROM documents d
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    LEFT JOIN (
+      SELECT hash, COUNT(*) as cnt FROM content_vectors GROUP BY hash
+    ) v ON d.hash = v.hash
+    LEFT JOIN content_chunk_expectations e ON d.hash = e.hash
+    WHERE d.active = 1 AND (
+      v.cnt IS NULL
+      OR v.cnt = 0
+      OR (e.total_chunks IS NOT NULL AND v.cnt < e.total_chunks)
+      OR (
+        EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='indexing_checkpoints')
+        AND EXISTS (SELECT 1 FROM indexing_checkpoints WHERE status IN ('in_progress', 'paused'))
+      )
+    )
   `).get() as { count: number };
   return result.count;
 }
@@ -3225,12 +3549,25 @@ async function getEmbedding(text: string, model: string, isQuery: boolean, sessi
  * Returns hash, document body, and a sample path for display purposes.
  */
 export function getHashesForEmbedding(db: Database): { hash: string; body: string; path: string }[] {
+  ensureExpectationTable(db);
+  ensureCheckpointTable(db);
   return db.prepare(`
     SELECT d.hash, c.doc as body, MIN(d.path) as path
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    LEFT JOIN (
+      SELECT hash, COUNT(*) as cnt FROM content_vectors GROUP BY hash
+    ) v ON d.hash = v.hash
+    LEFT JOIN content_chunk_expectations e ON d.hash = e.hash
+    WHERE d.active = 1 AND (
+      v.cnt IS NULL
+      OR v.cnt = 0
+      OR (e.total_chunks IS NOT NULL AND v.cnt < e.total_chunks)
+      OR (
+        EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='indexing_checkpoints')
+        AND EXISTS (SELECT 1 FROM indexing_checkpoints WHERE status IN ('in_progress', 'paused'))
+      )
+    )
     GROUP BY d.hash
   `).all() as { hash: string; body: string; path: string }[];
 }
@@ -3240,8 +3577,19 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
  * Deletes all rows from content_vectors and drops the vectors_vec table.
  */
 export function clearAllEmbeddings(db: Database): void {
-  db.exec(`DELETE FROM content_vectors`);
-  db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+  ensureExpectationTable(db);
+  ensureCheckpointTable(db);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`DELETE FROM content_vectors`);
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    db.exec(`DELETE FROM content_chunk_expectations`);
+    db.exec(`DELETE FROM indexing_checkpoints`);
+    db.exec("COMMIT");
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw err;
+  }
 }
 
 /**

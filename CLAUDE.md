@@ -153,7 +153,7 @@ PYTHONPATH=. .venv/bin/pytest test/python/
 
 - SQLite FTS5 for full-text search (BM25)
 - sqlite-vec for vector similarity search
-- Dual embedding backends: MLX-native (Apple Silicon GPU, 2-5x faster) or node-llama-cpp GGUF (CPU/Metal)
+- Dual embedding backends: MLX-native (Apple Silicon Metal GPU via Python bridge) or node-llama-cpp GGUF (CPU/Metal)
 - node-llama-cpp for reranking (qwen3-reranker) and query expansion (Qwen3)
 - Reciprocal Rank Fusion (RRF) for combining results
 - Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries

@@ -47,6 +47,7 @@ export function computeEmbeddingSpaceId(descriptor: EmbeddingDescriptor): string
     nd: descriptor.nativeDimensions,
     od: descriptor.outputDimensions,
     n: descriptor.normalized,
+    q: descriptor.quantization?.trim() || "",
   };
 
   const json = JSON.stringify(canonical, Object.keys(canonical).sort());

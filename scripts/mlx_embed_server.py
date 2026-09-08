@@ -89,14 +89,34 @@ def main():
         generate_model=args.generate_model or None,
     )
 
+    import signal
+    import threading
+
+    stop_event = threading.Event()
+
+    def _sig_handler(signum, frame):
+        print(f"\n[mlx-server] Received signal {signum}, initiating graceful shutdown...")
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _sig_handler)
+    signal.signal(signal.SIGINT, _sig_handler)
+
     try:
-        while thread.is_alive():
+        while thread.is_alive() and not stop_event.is_set():
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[mlx-server] Shutting down...")
-        server.shutdown()
+        pass
+    finally:
+        print("[mlx-server] Shutting down...")
+        server.stop()
         server.server_close()
-        print("[mlx-server] Stopped.")
+        if thread.is_alive():
+            thread.join(timeout=10.0)
+        if server._stopped_event.is_set() and not thread.is_alive():
+            print("[mlx-server] Stopped.")
+        else:
+            print("[mlx-server] Shutdown incomplete: server thread or worker still active.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

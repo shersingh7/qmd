@@ -539,7 +539,7 @@ export class LlamaCpp implements LLM {
       this.mlxExpandFallback = false;
     } else {
       this.failClosed = config.mlxFallback === false ? true : (resolved.backend === 'mlx');
-      this.mlxFallback = config.mlxFallback ?? true;
+      this.mlxFallback = config.mlxFallback ?? (resolved.backend !== 'mlx');
       this.mlxRerankFallback = (process.env.QMD_MLX_RERANK_FALLBACK ?? '1') !== '0';
       this.mlxExpandFallback = (process.env.QMD_MLX_EXPAND_FALLBACK ?? '1') !== '0';
     }
@@ -1065,12 +1065,14 @@ export class LlamaCpp implements LLM {
 
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
     // MLX fast-path: route to external MLX server for GPU-accelerated embeddings
-    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
-      const result = await this._embedMlx(text, options);
-      // If MLX succeeded, return immediately. If it returned null due to fallback,
-      // fall through to GGUF below.
-      if (result) return result;
-      if (!this.mlxFailed) return null; // hard failure, don't retry
+    if (this.embedBackend === 'mlx') {
+      if (!this.mlxFailed || !this.mlxFallback) {
+        const result = await this._embedMlx(text, options);
+        if (result) return result;
+      }
+      if (!this.mlxFallback) {
+        throw new Error("MLX embedding failed and GGUF fallback is disabled");
+      }
     }
 
     // Ping activity at start to keep models alive during this operation
@@ -1102,12 +1104,14 @@ export class LlamaCpp implements LLM {
    * Uses Promise.all for parallel embedding - node-llama-cpp handles batching internally
    */
   async embedBatch(texts: string[], options: EmbedOptions = {}): Promise<(EmbeddingResult | null)[]> {
-    if (this.embedBackend === 'mlx' && !this.mlxFailed) {
-      const results = await this._embedBatchMlx(texts, options);
-      // If MLX returned all nulls (fallback triggered), fall through to GGUF.
-      // If it returned real results, use them.
-      if (results.some((r) => r !== null)) return results;
-      if (!this.mlxFailed) return texts.map(() => null); // hard failure
+    if (this.embedBackend === 'mlx') {
+      if (!this.mlxFailed || !this.mlxFallback) {
+        const results = await this._embedBatchMlx(texts, options);
+        if (results.some((r) => r !== null)) return results;
+      }
+      if (!this.mlxFallback) {
+        throw new Error("MLX batch embedding failed and GGUF fallback is disabled");
+      }
     }
 
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
@@ -1252,9 +1256,12 @@ export class LlamaCpp implements LLM {
         dims: this.mlxDims ?? undefined,
       });
     } catch (err) {
-      console.error("MLX embedding error:", err);
-      if (this.mlxFallback) { this.mlxFailed = true; return null; }
-      return null;
+      if (this.mlxFallback && !this.failClosed) {
+        console.warn(`MLX embedding error, falling back to GGUF: ${err instanceof Error ? err.message : String(err)}`);
+        this.mlxFailed = true;
+        return null;
+      }
+      throw err;
     }
   }
 
@@ -1375,9 +1382,12 @@ export class LlamaCpp implements LLM {
         dims: this.mlxDims ?? undefined,
       });
     } catch (err) {
-      console.error("MLX batch embedding error:", err);
-      if (this.mlxFallback) { this.mlxFailed = true; return texts.map(() => null); }
-      return texts.map(() => null);
+      if (this.mlxFallback && !this.failClosed) {
+        console.warn(`MLX batch embedding error, falling back to GGUF: ${err instanceof Error ? err.message : String(err)}`);
+        this.mlxFailed = true;
+        return texts.map(() => null);
+      }
+      throw err;
     }
   }
 

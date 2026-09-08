@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """
-bench_representative.py — Representative Apple Silicon MLX Benchmark Harness
+bench_representative.py — Representative Apple Silicon MLX In-Process Microbenchmark Harness
 
-Implements the strict measurement protocol defined in docs/benchmarks/acceptance-protocol.md:
-  - Captures full hardware, OS, commit, and model metadata in benchmark manifest
-  - Synchronizes Metal device queues (mx.eval) before and after timing intervals
-  - Separates tokenization, GPU forward, pooling, serialization, and disk I/O durations
+Measures in-process CPU tokenization, length-aware micro-batching, and Metal GPU forward latency/throughput:
+  - Captures hardware, OS, commit, and model metadata in benchmark manifest
+  - Synchronizes Metal device queues before and after timing intervals
+  - Separates CPU tokenization from Metal GPU forward durations
   - Tracks true input tokens, padded tokens, active Metal MB, peak Metal MB, and process RSS
   - Evaluates stratified synthetic document lengths (short, medium, long, code)
   - Computes latency percentiles (p50, p90, p95, p99) and token throughput with zero fabrication
@@ -190,7 +189,8 @@ def run_representative_benchmark(
     load_time = time.time() - t0
     print(f"Model loaded in {load_time:.2f}s (active: {get_active_metal_mb():.1f}MB)")
 
-    planner = BatchPlanner(max_batch_tokens=8192)
+    planner = BatchPlanner(max_batch_tokens=batch_size * 512 if batch_size > 0 else 8192)
+    planner.tune_for_model(getattr(adapter, "model_params_b", 0.6))
     strata = generate_synthetic_strata()
     strata_results: List[StrataResult] = []
 
@@ -198,7 +198,7 @@ def run_representative_benchmark(
     print("Executing warmup runs...")
     for _ in range(warmup_runs):
         for texts in strata.values():
-            tb = adapter.tokenize_texts(texts[:2])
+            tb = adapter.tokenize_texts(texts[:min(2, len(texts))])
             adapter.forward_batch(tb)
     if hasattr(mx, "synchronize"):
         mx.synchronize()
@@ -213,22 +213,28 @@ def run_representative_benchmark(
 
         for run_idx in range(measured_runs):
             t_tok_start = time.perf_counter()
-            tokenized_batch = adapter.tokenize_texts(texts)
+            # Tokenize in chunks of batch_size
+            tokenized_batches = [
+                adapter.tokenize_texts(texts[i : i + batch_size])
+                for i in range(0, len(texts), batch_size)
+            ]
             t_tok_end = time.perf_counter()
 
             if run_idx == 0:
-                total_tokens = sum(tokenized_batch.lengths)
-                padded_ids, _, _ = tokenized_batch.pad_micro_batch()
-                total_padded_tokens = padded_ids.size
+                total_tokens = sum(sum(tb.lengths) for tb in tokenized_batches)
+                for tb in tokenized_batches:
+                    padded_ids, _, _ = tb.pad_micro_batch()
+                    total_padded_tokens += padded_ids.size
 
             if hasattr(mx, "synchronize"):
                 mx.synchronize()
 
             t_fwd_start = time.perf_counter()
-            res = planner.plan_and_execute_tokenized(
-                tokenized_batch=tokenized_batch,
-                embed_fn=lambda sub: adapter.forward_batch(sub),
-            )
+            for tb in tokenized_batches:
+                res = planner.plan_and_execute_tokenized(
+                    tokenized_batch=tb,
+                    embed_fn=lambda sub: adapter.forward_batch(sub),
+                )
             if hasattr(mx, "synchronize"):
                 mx.synchronize()
             t_fwd_end = time.perf_counter()

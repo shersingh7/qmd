@@ -326,3 +326,49 @@ describe("MlxEmbedClient Class", () => {
     expect(batch[0]?.embedding.length).toBe(768);
   });
 });
+
+describe("LlamaCpp MLX Fail-Closed Semantics", () => {
+  test("MLX backend fails closed when unreachable without falling through to GGUF", async () => {
+    const { LlamaCpp } = await import("../src/llm.js");
+    const llm = new LlamaCpp({
+      embedBackend: "mlx",
+      mlxUrl: "http://127.0.0.1:59999", // unreachable port
+      mlxFallback: false,
+    });
+
+    await expect(llm.embed("test query")).rejects.toThrow(/MLX embedding server unreachable/);
+    await expect(llm.embedBatch(["doc 1", "doc 2"])).rejects.toThrow(/MLX embedding server unreachable/);
+  });
+
+  test("MLX backend defaults to mlxFallback: false (fail-closed) when unspecified", async () => {
+    const { LlamaCpp } = await import("../src/llm.js");
+    const llm = new LlamaCpp({
+      embedBackend: "mlx",
+      mlxUrl: "http://127.0.0.1:59999", // unreachable port
+    });
+
+    // Verify mlxFallback is false by default for MLX backend
+    expect((llm as any).mlxFallback).toBe(false);
+    expect((llm as any).failClosed).toBe(true);
+
+    await expect(llm.embed("test query")).rejects.toThrow(/MLX embedding server unreachable/);
+  });
+
+  test("MLX backend retries connection on subsequent requests rather than permanently locking", async () => {
+    const { LlamaCpp } = await import("../src/llm.js");
+    const llm = new LlamaCpp({
+      embedBackend: "mlx",
+      mlxUrl: "http://127.0.0.1:59999",
+      mlxFallback: false,
+    });
+
+    // First attempt fails closed
+    await expect(llm.embed("attempt 1")).rejects.toThrow(/MLX embedding server unreachable/);
+
+    // Update URL to the running mock server and verify retry succeeds
+    (llm as any).mlxUrlOverride = serverUrl;
+    const res = await llm.embed("attempt 2");
+    expect(res).not.toBeNull();
+    expect(res?.embedding.length).toBe(768);
+  });
+});

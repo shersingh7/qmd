@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from typing import Any, Optional
+import numpy as np
 
 from .executor import GPUExecutor
 from .model_manager import ModelResidencyManager, ModelState
@@ -59,6 +60,87 @@ class ThreadedMLXServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.runtime: Optional[MLXEmbeddingRuntime] = None
         self.rerank_adapter: Optional[Any] = None
         self.generate_adapter: Optional[Any] = None
+        self._serving_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._stopped_event = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._stop_lock = self._lifecycle_lock
+        self._before_serve_hook: Optional[Any] = None
+
+    def stop(self, timeout: float = 10.0):
+        """
+        Coordinates graceful server shutdown lifecycle:
+        1. Sets STOPPING state and sets stop event under lifecycle lock.
+        2. Stops runtime admission to reject new requests and wake waiting admission leases.
+        3. Explicitly shuts down shared server.executor (cancelling queued work and joining worker).
+        4. If worker thread has terminated, safely unloads all resident models and sets _stopped_event.
+           If worker thread is still alive (e.g. blocked job beyond join budget), defers unload and _stopped_event.
+        """
+        with self._lifecycle_lock:
+            self.state = ServerState.STOPPING
+            self._stop_event.set()
+
+            # Stop runtime admission first
+            if self.runtime:
+                try:
+                    self.runtime.stop_admission()
+                except Exception:
+                    pass
+
+            # Explicitly shut down shared executor regardless of runtime presence
+            if self.executor:
+                try:
+                    self.executor.shutdown(timeout=timeout)
+                except Exception:
+                    pass
+
+            # If executor worker thread is still running (e.g. noncooperative forward beyond join budget),
+            # do NOT unload models or falsely claim stopped.
+            if self.executor and self.executor.is_worker_alive():
+                print("[mlx-server] Worker thread still active after join timeout; cleanup pending.", file=sys.stderr)
+                return
+
+            # Safe to unload models ONLY AFTER the execution owner thread has completely exited
+            if self.model_manager:
+                try:
+                    self.model_manager.unload_all()
+                except Exception:
+                    pass
+            elif self.runtime:
+                try:
+                    if hasattr(self.runtime, "adapter") and not (self.executor and self.executor.is_worker_alive()):
+                        self.runtime.adapter.unload()
+                except Exception:
+                    pass
+
+            self._stopped_event.set()
+
+    def serve_forever(self, poll_interval: float = 0.2):
+        """
+        Lifecycle-safe managed request dispatching loop.
+        Uses a short poll timeout (handle_request) and repeatedly inspects _stop_event,
+        eliminating races between stop() and BaseServer.shutdown() / serve_forever() handshakes.
+        """
+        self.timeout = poll_interval
+        self._serving_event.set()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self.handle_request()
+                except (KeyboardInterrupt, OSError, ValueError):
+                    break
+        finally:
+            self._serving_event.clear()
+
+    def shutdown(self):
+        self.stop()
+
+    def server_close(self):
+        self.stop()
+        try:
+            super().server_close()
+        except Exception:
+            pass
 
     def process_request(self, request, client_address):
         if not self.thread_limiter.acquire(blocking=False):
@@ -282,7 +364,10 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                         raise InvalidInputError(f"texts[{i}] is not a string")
                     if len(t) > 256 * 1024:
                         raise InvalidInputError(f"texts[{i}] exceeds 256KB")
-                tokens = srv.runtime.tokenize(texts)
+                req_timeout = parse_timeout(payload, timeout_header, default_timeout=120.0)
+                deadline = time.monotonic() + req_timeout
+                cancel_event = threading.Event()
+                tokens = srv.runtime.tokenize(texts, deadline=deadline, cancel_event=cancel_event)
                 counts = [len(t) for t in tokens]
                 self._send_json({"tokens": tokens, "counts": counts}, 200)
             except Exception as exc:
@@ -363,6 +448,8 @@ class MLXHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 bin_data = encode_binary_embeddings(embeddings_arr, count, dims)
                 self._send_binary(bin_data, 200)
             else:
+                if not np.all(np.isfinite(embeddings_arr)):
+                    raise ProtocolError("Embeddings contain NaN or Infinite values")
                 self._send_json({
                     "embeddings": embeddings_arr.tolist(),
                     "model": srv.runtime.model_name,
@@ -390,22 +477,28 @@ def start_server(
     max_batch_tokens: int = 0,
     rerank_model: Optional[str] = None,
     generate_model: Optional[str] = None,
+    _before_serve_hook: Optional[Any] = None,
 ) -> tuple[ThreadedMLXServer, threading.Thread]:
     """
     Initializes unified executor, residency manager, adapters, and starts HTTP server.
     """
     server = ThreadedMLXServer((bind_host, port), MLXHTTPRequestHandler)
+    server._before_serve_hook = _before_serve_hook
     server.state = ServerState.STARTING
 
     def _init_and_serve():
         try:
-            executor = GPUExecutor()
-            server.executor = executor
+            with server._lifecycle_lock:
+                if server._stop_event.is_set():
+                    return
 
-            model_manager = ModelResidencyManager(executor)
-            server.model_manager = model_manager
+                executor = GPUExecutor()
+                server.executor = executor
 
-            server.state = ServerState.LOADING if preload else ServerState.READY
+                model_manager = ModelResidencyManager(executor)
+                server.model_manager = model_manager
+
+                server.state = ServerState.LOADING if preload else ServerState.READY
 
             runtime = MLXEmbeddingRuntime(
                 model_name=model_name,
@@ -417,12 +510,20 @@ def start_server(
                 model_manager=model_manager,
                 lazy_load=not preload,
             )
-            server.runtime = runtime
+
+            with server._lifecycle_lock:
+                if server._stop_event.is_set():
+                    return
+                server.runtime = runtime
 
             if preload and warmup:
+                if server._stop_event.is_set():
+                    return
                 runtime.warmup()
 
             if rerank_model:
+                if server._stop_event.is_set():
+                    return
                 from .rerank import MLXRerankAdapter
                 rerank_adapter = MLXRerankAdapter(
                     model_name=rerank_model,
@@ -434,10 +535,15 @@ def start_server(
                 model_manager.register_adapter("rerank", rerank_adapter)
                 if preload:
                     model_manager.ensure_loaded("rerank")
-                server.rerank_adapter = rerank_adapter
+                with server._lifecycle_lock:
+                    if server._stop_event.is_set():
+                        return
+                    server.rerank_adapter = rerank_adapter
                 print(f"[mlx-server] Rerank adapter ready: {rerank_model}")
 
             if generate_model:
+                if server._stop_event.is_set():
+                    return
                 from .generate import MLXGenerateAdapter
                 generate_adapter = MLXGenerateAdapter(
                     model_name=generate_model,
@@ -448,34 +554,38 @@ def start_server(
                 model_manager.register_adapter("generate", generate_adapter)
                 if preload:
                     model_manager.ensure_loaded("generate")
-                server.generate_adapter = generate_adapter
+                with server._lifecycle_lock:
+                    if server._stop_event.is_set():
+                        return
+                    server.generate_adapter = generate_adapter
                 print(f"[mlx-server] Generate adapter ready: {generate_model}")
 
-            server.state = ServerState.READY
-            print(f"[mlx-server] Model '{model_name}' ready on http://{bind_host}:{port}")
-        except Exception as e:
-            server.state = ServerState.FAILED
-            server.state_error = str(e)
-            print(f"[mlx-server] Model loading failed: {e}", file=sys.stderr)
+            with server._lifecycle_lock:
+                if server._stop_event.is_set():
+                    return
+                server.state = ServerState.READY
+                print(f"[mlx-server] Model '{model_name}' ready on http://{bind_host}:{port}")
 
-        try:
-            server.serve_forever()
-        except (KeyboardInterrupt, OSError):
-            pass
-        finally:
-            server.state = ServerState.STOPPING
-            if server.model_manager:
-                try:
-                    server.model_manager.unload_all()
-                except Exception:
-                    pass
-            elif server.runtime:
-                try:
-                    server.runtime.shutdown()
-                except Exception:
-                    pass
-            if server.executor:
-                server.executor.shutdown()
+        except Exception as e:
+            with server._lifecycle_lock:
+                if not server._stop_event.is_set():
+                    server.state = ServerState.FAILED
+                    server.state_error = str(e)
+                    print(f"[mlx-server] Model loading failed: {e}", file=sys.stderr)
+
+        if server._before_serve_hook:
+            try:
+                server._before_serve_hook()
+            except Exception:
+                pass
+
+        if not server._stop_event.is_set():
+            try:
+                server.serve_forever()
+            except (KeyboardInterrupt, OSError):
+                pass
+
+        server.stop()
 
     t = threading.Thread(target=_init_and_serve, daemon=True)
     t.start()

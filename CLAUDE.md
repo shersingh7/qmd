@@ -145,8 +145,8 @@ bun link               # Install globally as 'qmd'
 All tests live in `test/`. Run everything:
 
 ```sh
-bun test --preload ./src/test-preload.ts test/
-PYTHONPATH=. .venv/bin/pytest test/python/
+bun run test                          # TypeScript tests (Vitest)
+PYTHONPATH=. .venv/bin/pytest test/python/  # Python MLX tests
 ```
 
 ## Architecture

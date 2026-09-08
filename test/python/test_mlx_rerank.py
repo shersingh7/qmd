@@ -11,6 +11,7 @@ def test_rerank_adapter_imports():
     assert MLXRerankAdapter is not None
 
 
+@pytest.mark.real_model
 def test_dynamic_yes_no_token_resolution():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
@@ -21,6 +22,7 @@ def test_dynamic_yes_no_token_resolution():
     assert adapter.yes_token_id != adapter.no_token_id
 
 
+@pytest.mark.real_model
 def test_rerank_token_id_resolution_suffix_context():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
@@ -51,6 +53,7 @@ def test_rerank_token_id_resolution_ambiguity_raises():
         adapter._resolve_token_ids()
 
 
+@pytest.mark.real_model
 def test_rerank_score_ordering_and_determinism():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
@@ -77,6 +80,7 @@ def test_rerank_score_ordering_and_determinism():
         assert np.isfinite(s)
 
 
+@pytest.mark.real_model
 def test_rerank_batch_cardinality_and_order():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
     adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
@@ -99,7 +103,7 @@ def test_rerank_batch_cardinality_and_order():
 
 def test_rerank_invalid_and_empty_inputs():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
-    adapter = MLXRerankAdapter(model_name="mlx-community/Qwen3-Reranker-4B-mxfp8")
+    adapter = MLXRerankAdapter(model_name="fake-rerank-model", lazy_load=True)
 
     # Empty doc list returns empty list
     assert adapter.score_pairs("query", []) == []
@@ -116,9 +120,50 @@ def test_rerank_invalid_and_empty_inputs():
         adapter.score_pairs("query", [123])
 
 
+def test_rerank_tokenization_efficiency_offline():
+    """Verify that score_pairs_sync calls tokenizer encode efficiently per pair."""
+    from unittest.mock import MagicMock
+    import mlx.core as mx
+    import mlx.nn as nn
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter
+
+    adapter = MLXRerankAdapter(model_name="fake-rerank", lazy_load=True)
+    adapter.yes_token_id = 10
+    adapter.no_token_id = 20
+
+    hidden_dim = 32
+    vocab_size = 64
+    lin = nn.Linear(hidden_dim, vocab_size)
+
+    model = MagicMock()
+    backbone = MagicMock()
+    backbone.side_effect = lambda input_ids: mx.ones((input_ids.shape[0], input_ids.shape[1], hidden_dim))
+    model.model = backbone
+    model.lm_head = lin
+    adapter.model = model
+
+    encode_calls = [0]
+    fake_tok = MagicMock()
+    fake_tok.pad_token_id = 0
+
+    def mock_encode(text, **kwargs):
+        encode_calls[0] += 1
+        return [1, 2, 3, 4]
+
+    fake_tok.encode.side_effect = mock_encode
+    adapter.raw_hf_tokenizer = fake_tok
+
+    docs = ["doc1", "doc2", "doc3", "doc4"]
+    scores = adapter.score_pairs_sync("test query", docs)
+    assert len(scores) == 4
+    # With 4 docs, encode should be called at most 1 (for query) + 4 (for formatted pairs) = 5 times (vs 12 unoptimized)
+    assert encode_calls[0] <= 5
+
+
 LOCAL_4B = "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit"
 
 
+@pytest.mark.real_model
 def test_rerank_batch_equivalence():
     """Micro-batched scoring must match single-pair scoring numerically."""
     from scripts.qmd_mlx.rerank import MLXRerankAdapter
@@ -155,7 +200,7 @@ def test_rerank_batch_equivalence():
 def test_rerank_deadline():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
     from scripts.qmd_mlx.protocol import DeadlineExceededError
-    adapter = MLXRerankAdapter(model_name=LOCAL_4B)
+    adapter = MLXRerankAdapter(model_name="fake-rerank-model", lazy_load=True)
 
     with pytest.raises((RerankError, DeadlineExceededError), match="[Dd]eadline"):
         adapter.score_pairs("query", ["doc one", "doc two"], timeout_s=-1)
@@ -164,6 +209,7 @@ def test_rerank_deadline():
         adapter.score_pairs("query", ["doc"], batch_size=0)
 
 
+@pytest.mark.real_model
 def test_rerank_oversize_raises_error():
     from scripts.qmd_mlx.rerank import MLXRerankAdapter, RerankError
     adapter = MLXRerankAdapter(
@@ -177,3 +223,43 @@ def test_rerank_oversize_raises_error():
     # Explicit oversize error — no silent truncation
     with pytest.raises(RerankError, match="exceeds max safe budget"):
         adapter.score_pairs(query, [huge_doc])
+
+
+def test_rerank_quantized_linear_head_evaluation():
+    """Verify that score_pairs_sync correctly handles QuantizedLinear heads without crashing on uint32 weights."""
+    from unittest.mock import MagicMock
+    import mlx.core as mx
+    import mlx.nn as nn
+    from scripts.qmd_mlx.rerank import MLXRerankAdapter
+
+    adapter = MLXRerankAdapter(model_name="fake-quant-rerank", lazy_load=True)
+    adapter.yes_token_id = 10
+    adapter.no_token_id = 20
+
+    hidden_dim = 64
+    vocab_size = 128
+
+    # Create dummy linear and quantized linear
+    lin = nn.Linear(hidden_dim, vocab_size)
+    ql = nn.QuantizedLinear.from_linear(lin, bits=4)
+
+    # Mock model with backbone and quantized lm_head
+    model = MagicMock()
+    backbone = MagicMock()
+    # Mock backbone returning [batch, seq_len, hidden_dim]
+    backbone.side_effect = lambda input_ids: mx.ones((input_ids.shape[0], input_ids.shape[1], hidden_dim))
+    model.model = backbone
+    model.lm_head = ql
+    adapter.model = model
+
+    fake_tok = MagicMock()
+    fake_tok.pad_token_id = 0
+    fake_tok.encode.side_effect = lambda text, **kwargs: [1, 2, 3, 4]
+    adapter.raw_hf_tokenizer = fake_tok
+
+    scores = adapter.score_pairs_sync("test query", ["doc 1", "doc 2"])
+    assert len(scores) == 2
+    for s in scores:
+        assert isinstance(s, float)
+        assert 0.0 <= s <= 1.0
+        assert np.isfinite(s)

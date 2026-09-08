@@ -713,6 +713,75 @@ describe("Durable Indexing and Resume", () => {
       expect(finalSeqs).toEqual(Array.from({ length: finalSeqs.length }, (_, i) => i));
       expect(getActiveCheckpoint(store.db)).toBeNull();
     });
+
+    it("resumes successfully with omitted model option when real descriptor is present (Finding 4 Regression)", async () => {
+      const now = new Date().toISOString();
+      function insertDoc(name: string, body: string, hash: string) {
+        store.db.prepare(`
+          INSERT OR IGNORE INTO content (hash, doc, created_at)
+          VALUES (?, ?, ?)
+        `).run(hash, body, now);
+        store.db.prepare(`
+          INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
+          VALUES ('test', ?, ?, ?, ?, ?, 1)
+        `).run(`${name}.md`, name, hash, now, now);
+      }
+
+      insertDoc("doc-omitted-1", "First document content to test resume with omitted model option.", "hash-omitted-1");
+      insertDoc("doc-omitted-2", "Second document content to trigger mid-job cancellation on omitted model.", "hash-omitted-2");
+      insertDoc("doc-omitted-3", "Third document content to complete upon resuming with omitted model.", "hash-omitted-3");
+
+      const realDescriptor: EmbeddingDescriptor = {
+        version: 1,
+        backend: "mlx",
+        model: "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
+        outputDimensions: 1024,
+        nativeDimensions: 1024,
+        maxTokens: 512,
+        normalized: true,
+        pooling: "last",
+      };
+
+      const abortCtrl = new AbortController();
+      let callCount = 0;
+
+      const mockLlm = {
+        embedModelName: "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
+        getDescriptor: async () => realDescriptor,
+        async embed(): Promise<EmbeddingResult | null> {
+          callCount++;
+          if (callCount === 2) {
+            abortCtrl.abort();
+          }
+          return { embedding: new Array(1024).fill(0.01), model: "mlx-community/Qwen3-Embedding-4B-4bit-DWQ" };
+        },
+        async embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]> {
+          return Promise.all(texts.map(() => this.embed()));
+        },
+      };
+      store.llm = mockLlm as any;
+
+      // 1. Initial run without options.model: aborts mid-way
+      const firstRun = await runDurableIndexingJob(store, {
+        maxDocsPerBatch: 1,
+        signal: abortCtrl.signal,
+      });
+
+      expect(firstRun.status).toBe("cancelled");
+      const activeCp = getActiveCheckpoint(store.db);
+      expect(activeCp).not.toBeNull();
+      // Checkpoint was saved with descriptor's model name
+      expect(activeCp?.fingerprint.model).toBe("mlx-community/Qwen3-Embedding-4B-4bit-DWQ");
+
+      // 2. Resume run without options.model: MUST NOT throw IndexingFingerprintMismatchError
+      const resumeRun = await runDurableIndexingJob(store, {
+        maxDocsPerBatch: 1,
+      });
+
+      expect(resumeRun.status).toBe("complete");
+      expect(resumeRun.checkpoint.fingerprint.model).toBe("mlx-community/Qwen3-Embedding-4B-4bit-DWQ");
+      expect(getActiveCheckpoint(store.db)).toBeNull();
+    });
   });
 });
 

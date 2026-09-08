@@ -4,6 +4,7 @@ embedding.py — Explicit Model Adapters for MLX Embedding Models
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import Any, Optional
@@ -23,6 +24,73 @@ try:
     _MLX_AVAILABLE = True
 except ImportError:
     _MLX_AVAILABLE = False
+
+
+def infer_model_params_b(model_name: str, config: Optional[dict] = None) -> float:
+    """
+    Derives model parameter count in billions from model name or configuration.
+    Distinguishes parameter count (e.g. 0.6B, 1.7B, 4B, 7B) from quantization bits (e.g. 4bit, 8bit).
+    """
+    cfg = config or {}
+    if "num_parameters" in cfg and cfg["num_parameters"]:
+        return float(cfg["num_parameters"]) / 1e9
+
+    hidden = cfg.get("hidden_size") or cfg.get("d_model")
+    layers = cfg.get("num_hidden_layers") or cfg.get("num_layers")
+    if hidden and layers:
+        if hidden >= 3500:
+            return 7.0
+        elif hidden >= 2000:
+            return 4.0
+        elif hidden >= 1500:
+            return 1.7
+        elif hidden >= 1000:
+            return 0.6
+
+    # Regex: match e.g. 0.5b, 0.6b, 1.5b, 1.7b, 4b, 7b, 8b, 14b, 32b, 70b
+    # Crucially do NOT match 4bit, 8bit, 16bit!
+    m = re.search(r'(?:^|[_\-/])(\d+(?:\.\d+)?)[bB](?:[_\-/]|$)', model_name)
+    if m:
+        try:
+            val = float(m.group(1))
+            if 0.01 <= val <= 1000.0:
+                return val
+        except ValueError:
+            pass
+
+    name_l = model_name.lower()
+    if "minilm" in name_l:
+        return 0.033
+    if "nomic" in name_l:
+        return 0.137
+    if "bert" in name_l:
+        return 0.110
+
+    return 0.6
+
+
+def estimate_model_memory_mb(model_name: str, quantization: Optional[str] = None, params_b: Optional[float] = None) -> float:
+    """
+    Computes a consistent conservative pre-load memory estimate in MB.
+    """
+    pb = params_b if params_b is not None else infer_model_params_b(model_name)
+    q = (quantization or "").lower()
+    name_l = model_name.lower()
+
+    if "4bit" in q or "4bit" in name_l or "q4" in q or "q4" in name_l or "int4" in q or "dwq" in name_l:
+        bits = 4.5
+    elif "8bit" in q or "8bit" in name_l or "q8" in q or "q8" in name_l or "int8" in q or "mxfp8" in name_l:
+        bits = 8.5
+    elif "16" in q or "fp16" in name_l or "bf16" in name_l or "float16" in q or "bfloat16" in q:
+        bits = 16.0
+    elif "32" in q or "fp32" in name_l or "float32" in q:
+        bits = 32.0
+    else:
+        bits = 4.5 if ("4b" in name_l and "4bit" in name_l) else 16.0
+
+    bytes_per_param = bits / 8.0
+    est_mb = (pb * 1e9 * bytes_per_param / (1024 * 1024)) * 1.25
+    return max(100.0, est_mb)
 
 
 class BaseEmbeddingAdapter:
@@ -47,7 +115,7 @@ class BaseEmbeddingAdapter:
         self.measured_quantization: Optional[str] = None
         self.measured_revision: Optional[str] = None
 
-        self._init_lock = threading.Lock()
+        self._init_lock = threading.RLock()
 
         self.model: Any = None
         self.tokenizer: Any = None
@@ -58,8 +126,20 @@ class BaseEmbeddingAdapter:
         self.padding_side: str = "right"
         self.is_causal: bool = False
         self.model_type: str = "base"
+        self.model_params_b: float = infer_model_params_b(model_name)
+        self.estimated_memory_mb: float = estimate_model_memory_mb(model_name, quantization, self.model_params_b)
         self.model_memory_mb: float = 0.0
-        self.model_params_b: float = 0.6
+
+    def _get_active_memory_mb(self) -> float:
+        try:
+            if _MLX_AVAILABLE:
+                if hasattr(mx, "get_active_memory"):
+                    return mx.get_active_memory() / (1024 * 1024)
+                if hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
+                    return mx.metal.get_active_memory() / (1024 * 1024)
+        except Exception:
+            pass
+        return 0.0
 
     def is_loaded(self) -> bool:
         return self.model is not None and self.raw_hf_tokenizer is not None
@@ -75,10 +155,10 @@ class BaseEmbeddingAdapter:
             self.model_memory_mb = 0.0
 
     def tokenize_texts(self, texts: list[str]) -> TokenizedBatch:
-        """Tokenizes texts into TokenizedBatch."""
-        if not self.is_loaded():
+        """Tokenizes texts into TokenizedBatch on CPU using tokenizer."""
+        if self.raw_hf_tokenizer is None:
             with self._init_lock:
-                if not self.is_loaded():
+                if self.raw_hf_tokenizer is None:
                     self.load()
         return TokenizerHelper.tokenize_once(texts, self.raw_hf_tokenizer, max_length=self.max_length)
 
@@ -130,83 +210,90 @@ class QwenEmbeddingAdapter(BaseEmbeddingAdapter):
             if not _MLX_AVAILABLE:
                 raise ModelUnavailableError("MLX is not installed.")
 
-        t0 = time.time()
-        import mlx_lm
+            t0 = time.time()
+            mem_before = self._get_active_memory_mb()
+            import mlx_lm
 
-        try:
-            res = mlx_lm.load(
-                self.model_name,
-                revision=self.revision,
-                return_config=True,
-            )
-            if isinstance(res, tuple) and len(res) == 3:
-                model, tokenizer_wrap, config = res
-            elif isinstance(res, tuple) and len(res) == 2:
-                model, tokenizer_wrap = res
-                config = getattr(model, "config", {}) or {}
-            else:
-                model, tokenizer_wrap = res, None
-                config = {}
-        except TypeError:
             try:
-                model, tokenizer_wrap = mlx_lm.load(
+                res = mlx_lm.load(
                     self.model_name,
                     revision=self.revision,
+                    return_config=True,
                 )
-                config = getattr(model, "config", {}) or {}
+                if isinstance(res, tuple) and len(res) == 3:
+                    model, tokenizer_wrap, config = res
+                elif isinstance(res, tuple) and len(res) == 2:
+                    model, tokenizer_wrap = res
+                    config = getattr(model, "config", {}) or {}
+                else:
+                    model, tokenizer_wrap = res, None
+                    config = {}
+            except TypeError:
+                try:
+                    model, tokenizer_wrap = mlx_lm.load(
+                        self.model_name,
+                        revision=self.revision,
+                    )
+                    config = getattr(model, "config", {}) or {}
+                except Exception as exc:
+                    raise ModelUnavailableError(f"Failed to load Qwen embedding model '{self.model_name}': {exc}")
             except Exception as exc:
                 raise ModelUnavailableError(f"Failed to load Qwen embedding model '{self.model_name}': {exc}")
-        except Exception as exc:
-            raise ModelUnavailableError(f"Failed to load Qwen embedding model '{self.model_name}': {exc}")
 
-        self.model = model
-        self.tokenizer = tokenizer_wrap
-        self.raw_hf_tokenizer = getattr(tokenizer_wrap, "_tokenizer", tokenizer_wrap)
+            self.model = model
+            self.tokenizer = tokenizer_wrap
+            self.raw_hf_tokenizer = getattr(tokenizer_wrap, "_tokenizer", tokenizer_wrap)
 
-        # Extract measured quantization & revision from config
-        if isinstance(config, dict):
-            q_info = config.get("quantization")
-            if isinstance(q_info, dict):
-                if "quant_type" in q_info:
-                    self.measured_quantization = str(q_info["quant_type"])
-                elif "bits" in q_info:
-                    self.measured_quantization = f"{q_info['bits']}bit"
-                else:
-                    self.measured_quantization = "quantized"
-            elif isinstance(q_info, str):
-                self.measured_quantization = q_info
-            elif "torch_dtype" in config:
-                td = str(config["torch_dtype"])
-                if td in ("bfloat16", "bf16"):
-                    self.measured_quantization = "bf16"
-                elif td in ("float16", "fp16"):
-                    self.measured_quantization = "fp16"
-                elif td in ("float32", "fp32"):
-                    self.measured_quantization = "fp32"
-                else:
-                    self.measured_quantization = td
+            # Extract measured quantization & revision from config
+            if isinstance(config, dict):
+                q_info = config.get("quantization")
+                if isinstance(q_info, dict):
+                    if "quant_type" in q_info:
+                        self.measured_quantization = str(q_info["quant_type"])
+                    elif "bits" in q_info:
+                        self.measured_quantization = f"{q_info['bits']}bit"
+                    else:
+                        self.measured_quantization = "quantized"
+                elif isinstance(q_info, str):
+                    self.measured_quantization = q_info
+                elif "torch_dtype" in config:
+                    td = str(config["torch_dtype"])
+                    if td in ("bfloat16", "bf16"):
+                        self.measured_quantization = "bf16"
+                    elif td in ("float16", "fp16"):
+                        self.measured_quantization = "fp16"
+                    elif td in ("float32", "fp32"):
+                        self.measured_quantization = "fp32"
+                    else:
+                        self.measured_quantization = td
 
-            if config.get("_commit_hash"):
-                self.measured_revision = str(config["_commit_hash"])
-            elif config.get("revision"):
-                self.measured_revision = str(config["revision"])
+                if config.get("_commit_hash"):
+                    self.measured_revision = str(config["_commit_hash"])
+                elif config.get("revision"):
+                    self.measured_revision = str(config["revision"])
 
-        # Enforce right padding
-        if hasattr(self.raw_hf_tokenizer, "padding_side"):
-            self.raw_hf_tokenizer.padding_side = "right"
+            # Enforce right padding
+            if hasattr(self.raw_hf_tokenizer, "padding_side"):
+                self.raw_hf_tokenizer.padding_side = "right"
 
-        # Determine native dimensions
-        config = getattr(model, "args", getattr(model, "config", None))
-        if config and hasattr(config, "hidden_size"):
-            self.native_dims = int(config.hidden_size)
-        else:
-            dummy = mx.zeros((1, 4), dtype=mx.int32)
-            backbone = getattr(model, "model", getattr(model, "transformer", model))
-            out = backbone(dummy)
-            self.native_dims = int(out.shape[-1])
-            del out, dummy
+            # Determine native dimensions
+            config_obj = getattr(model, "args", getattr(model, "config", None))
+            if config_obj and hasattr(config_obj, "hidden_size"):
+                self.native_dims = int(config_obj.hidden_size)
+            else:
+                dummy = mx.zeros((1, 4), dtype=mx.int32)
+                backbone = getattr(model, "model", getattr(model, "transformer", model))
+                out = backbone(dummy)
+                self.native_dims = int(out.shape[-1])
+                del out, dummy
 
-        print(f"[mlx-qwen] Loaded '{self.model_name}' ✓ ({self.native_dims}d, last_token pooling) in {time.time() - t0:.2f}s")
+            # Update model_params_b and measured memory
+            cfg_dict = config if isinstance(config, dict) else (config_obj.__dict__ if hasattr(config_obj, "__dict__") else {})
+            self.model_params_b = infer_model_params_b(self.model_name, cfg_dict)
+            mem_delta = self._get_active_memory_mb() - mem_before
+            self.model_memory_mb = max(0.0, mem_delta) if mem_delta > 10.0 else self.estimated_memory_mb
+
+            print(f"[mlx-qwen] Loaded '{self.model_name}' ✓ ({self.native_dims}d, {self.model_params_b}B params, {self.model_memory_mb:.1f}MB, last_token pooling) in {time.time() - t0:.2f}s")
 
     def forward_batch(
         self,
@@ -268,6 +355,7 @@ class NomicEmbeddingAdapter(BaseEmbeddingAdapter):
                 raise ModelUnavailableError("MLX is not installed.")
 
             t0 = time.time()
+            mem_before = self._get_active_memory_mb()
             try:
                 from transformers import AutoTokenizer
                 from mlx_embedding_models.nomic_model import NomicBert
@@ -288,7 +376,11 @@ class NomicEmbeddingAdapter(BaseEmbeddingAdapter):
             except Exception as exc:
                 raise ModelUnavailableError(f"Failed to load NomicBERT model '{self.model_name}': {exc}")
 
-            print(f"[mlx-nomic] Loaded '{self.model_name}' ✓ ({self.native_dims}d, mean pooling) in {time.time() - t0:.2f}s")
+            self.model_params_b = infer_model_params_b(self.model_name)
+            mem_delta = self._get_active_memory_mb() - mem_before
+            self.model_memory_mb = max(0.0, mem_delta) if mem_delta > 10.0 else self.estimated_memory_mb
+
+            print(f"[mlx-nomic] Loaded '{self.model_name}' ✓ ({self.native_dims}d, {self.model_params_b}B params, {self.model_memory_mb:.1f}MB, mean pooling) in {time.time() - t0:.2f}s")
 
     def forward_batch(
         self,
@@ -344,28 +436,33 @@ class BertEmbeddingAdapter(BaseEmbeddingAdapter):
             if not _MLX_AVAILABLE:
                 raise ModelUnavailableError("MLX is not installed.")
 
-        t0 = time.time()
-        try:
-            from transformers import AutoTokenizer
-            from mlx_embedding_models.model import Bert
+            t0 = time.time()
+            mem_before = self._get_active_memory_mb()
+            try:
+                from transformers import AutoTokenizer
+                from mlx_embedding_models.model import Bert
 
-            self.raw_hf_tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                trust_remote_code=self.trust_remote_code,
-                revision=self.revision,
-            )
-            self.tokenizer = self.raw_hf_tokenizer
-            self.model = Bert.from_pretrained(self.model_name)
+                self.raw_hf_tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=self.trust_remote_code,
+                    revision=self.revision,
+                )
+                self.tokenizer = self.raw_hf_tokenizer
+                self.model = Bert.from_pretrained(self.model_name)
 
-            dummy_tok = self.raw_hf_tokenizer(["test"], return_tensors="np", padding=True, truncation=True)
-            dummy_ids = mx.array(dummy_tok["input_ids"])
-            hidden_states, _ = self.model(dummy_ids)
-            self.native_dims = int(hidden_states.shape[-1])
-            del dummy_ids, dummy_tok, hidden_states
-        except Exception as exc:
-            raise ModelUnavailableError(f"Failed to load BERT model '{self.model_name}': {exc}")
+                dummy_tok = self.raw_hf_tokenizer(["test"], return_tensors="np", padding=True, truncation=True)
+                dummy_ids = mx.array(dummy_tok["input_ids"])
+                hidden_states, _ = self.model(dummy_ids)
+                self.native_dims = int(hidden_states.shape[-1])
+                del dummy_ids, dummy_tok, hidden_states
+            except Exception as exc:
+                raise ModelUnavailableError(f"Failed to load BERT model '{self.model_name}': {exc}")
 
-        print(f"[mlx-bert] Loaded '{self.model_name}' ✓ ({self.native_dims}d, mean pooling) in {time.time() - t0:.2f}s")
+            self.model_params_b = infer_model_params_b(self.model_name)
+            mem_delta = self._get_active_memory_mb() - mem_before
+            self.model_memory_mb = max(0.0, mem_delta) if mem_delta > 10.0 else self.estimated_memory_mb
+
+            print(f"[mlx-bert] Loaded '{self.model_name}' ✓ ({self.native_dims}d, {self.model_params_b}B params, {self.model_memory_mb:.1f}MB, mean pooling) in {time.time() - t0:.2f}s")
 
     def forward_batch(
         self,

@@ -39,7 +39,8 @@ export function computeEmbeddingSpaceId(descriptor: EmbeddingDescriptor): string
   const canonical = {
     v: descriptor.version,
     b: descriptor.backend,
-    m: descriptor.model.trim().toLowerCase(),
+    m: descriptor.model.trim(),
+    t: descriptor.tokenizer?.trim() || "",
     r: descriptor.revision?.trim() || "",
     p: descriptor.pooling,
     qp: descriptor.queryPrefix || "",

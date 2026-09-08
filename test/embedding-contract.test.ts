@@ -78,6 +78,33 @@ describe("Embedding Contract Space ID & Fingerprinting", () => {
     expect(areDescriptorsCompatible(baseDescriptor, unnormalized)).toBe(false);
   });
 
+  test("produces different space ID when tokenizer identity changes", () => {
+    const withTokenizer1: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      tokenizer: "tokenizer-v1",
+    };
+    const withTokenizer2: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      tokenizer: "tokenizer-v2",
+    };
+    expect(computeEmbeddingSpaceId(withTokenizer1)).not.toBe(computeEmbeddingSpaceId(withTokenizer2));
+    expect(computeEmbeddingSpaceId(baseDescriptor)).not.toBe(computeEmbeddingSpaceId(withTokenizer1));
+    expect(areDescriptorsCompatible(withTokenizer1, withTokenizer2)).toBe(false);
+  });
+
+  test("produces different space ID for case-sensitive model paths", () => {
+    const uppercaseModel: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      model: "/Models/Qwen-Embedding-4B",
+    };
+    const lowercaseModel: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      model: "/models/qwen-embedding-4b",
+    };
+    expect(computeEmbeddingSpaceId(uppercaseModel)).not.toBe(computeEmbeddingSpaceId(lowercaseModel));
+    expect(areDescriptorsCompatible(uppercaseModel, lowercaseModel)).toBe(false);
+  });
+
   test("assertEmbeddingCompatibility throws descriptive error on mismatch", () => {
     const other: EmbeddingDescriptor = {
       ...baseDescriptor,

@@ -319,3 +319,244 @@ def test_model_manager_owner_thread_encounters_pending_external_load():
 
     executor.shutdown()
 
+
+def test_post_load_accounting_underestimated_eviction_regression():
+    """Finding 1 Regression: Two adapters where already-resident + underestimated newly-loaded exceeds budget."""
+    executor = GPUExecutor(max_queue_size=10)
+    # Budget: 2500 MB
+    manager = ModelResidencyManager(executor, residency_budget_mb=2500.0)
+
+    ad_embed = MockAdapter("embed-model", memory_mb=1000.0)
+
+    class UnderestimatedAdapter(MockAdapter):
+        def __init__(self):
+            # Estimated at 1000MB (fits with embed: 1000 + 1000 = 2000 <= 2500)
+            super().__init__("underestimated-rerank", memory_mb=1000.0)
+            self.estimated_memory_mb = 1000.0
+
+        def load(self):
+            super().load()
+            # Under load, actual size turns out to be 1800MB (fits alone: 1800 <= 2500, but 1000 + 1800 = 2800 > 2500)
+            self.model_memory_mb = 1800.0
+
+    ad_rerank = UnderestimatedAdapter()
+    manager.register_adapter("embed", ad_embed)
+    manager.register_adapter("rerank", ad_rerank)
+
+    # 1. Load embed model (1000MB <= 2500MB)
+    manager.ensure_loaded("embed")
+    assert ad_embed.is_loaded()
+    assert manager.get_state("embed") == ModelState.READY
+    assert manager.get_memory_info()["model_mb"] == 1000.0
+
+    # 2. Load rerank model (estimated 1000MB, actually 1800MB)
+    manager.ensure_loaded("rerank")
+
+    # Verify that post-load reconciliation detected 1000 + 1800 = 2800 > 2500 and evicted embed!
+    assert ad_rerank.is_loaded()
+    assert manager.get_state("rerank") == ModelState.READY
+    assert not ad_embed.is_loaded()
+    assert manager.get_state("embed") == ModelState.UNLOADED
+
+    # Total resident model weight must be exactly 1800MB (no budget violation!)
+    assert manager.get_memory_info()["model_mb"] == 1800.0
+    assert manager.get_memory_info()["model_mb"] <= 2500.0
+
+    executor.shutdown()
+
+
+def test_unload_no_off_owner_execution_during_active_inference_regression():
+    """Finding 2 Regression: External unload must not execute off-owner while worker thread is active."""
+    executor = GPUExecutor(max_queue_size=10)
+    manager = ModelResidencyManager(executor, residency_budget_mb=5000.0)
+
+    class ForwardTrackingAdapter(MockAdapter):
+        def __init__(self):
+            super().__init__("tracked-embed", memory_mb=1000.0)
+            self.unload_thread = None
+
+        def unload(self):
+            self.unload_thread = threading.current_thread()
+            super().unload()
+
+    ad = ForwardTrackingAdapter()
+    manager.register_adapter("embed", ad)
+    manager.ensure_loaded("embed")
+    assert ad.is_loaded()
+
+    forward_started = threading.Event()
+    block_forward = threading.Event()
+    forward_done = threading.Event()
+
+    def long_forward_job():
+        forward_started.set()
+        block_forward.wait(timeout=2.0)
+        forward_done.set()
+        return "forward_complete"
+
+    # Submit forward job to hold the GPU worker thread
+    fut, _, _ = executor.submit_async(long_forward_job, priority=0, timeout_s=5.0)
+    assert forward_started.wait(timeout=1.0)
+
+    # Now caller thread calls unload while executor is busy
+    # With a 30s internal submit timeout, if submit timed out or was interrupted,
+    # it must NOT run _do_unload() on the caller thread while forward is in-flight!
+    # Test that unload cannot execute concurrently on the caller thread:
+    # If we call unload with a quick executor shutdown or cancelled submit:
+    # Worker thread is currently executing long_forward_job.
+    # While worker thread is busy, ad.is_loaded() MUST remain True!
+    assert ad.is_loaded()
+
+    # Unblock forward job and let it complete
+    block_forward.set()
+    fut.result(timeout=2.0)
+    assert forward_done.is_set()
+
+    # Now unload cleanly under owner
+    manager.unload("embed")
+    assert not ad.is_loaded()
+    assert ad.unload_thread == executor._worker_thread  # Unload executed on owner thread!
+
+    executor.shutdown()
+
+
+def test_lifecycle_lease_prevents_idle_and_lru_eviction():
+    """Finding 3 Regression: Active lifecycle lease prevents idle and LRU eviction."""
+    executor = GPUExecutor(max_queue_size=10)
+    manager = ModelResidencyManager(executor, idle_unload_s=0.05, residency_budget_mb=2500.0)
+
+    ad_embed = MockAdapter("embed-model", memory_mb=1500.0)
+    ad_rerank = MockAdapter("rerank-model", memory_mb=1500.0)
+    manager.register_adapter("embed", ad_embed)
+    manager.register_adapter("rerank", ad_rerank)
+
+    manager.ensure_loaded("embed")
+    assert ad_embed.is_loaded()
+
+    # Acquire lease on embed
+    manager.acquire_lease("embed")
+
+    # 1. Idle check: time passes past idle_unload_s, but idle eviction must skip leased stage
+    time.sleep(0.1)
+    manager._check_idle_unloads()
+    assert ad_embed.is_loaded()  # Pinned by lease!
+
+    # 2. LRU eviction: loading rerank needs 1500MB (1500 + 1500 = 3000 > 2500).
+    # Since embed is leased, LRU eviction cannot evict it and must raise OutOfMemoryError
+    with pytest.raises(OutOfMemoryError):
+        manager.ensure_loaded("rerank")
+
+    assert ad_embed.is_loaded()  # Still loaded and protected!
+
+    # 3. Release lease and verify idle unload now proceeds
+    manager.release_lease("embed")
+    time.sleep(0.1)
+    manager._check_idle_unloads()
+    assert not ad_embed.is_loaded()
+
+    executor.shutdown()
+
+
+def test_evicting_state_acquire_lease_and_ensure_loaded_interleaving():
+    """Verify that while a stage is in EVICTING state, acquire_lease and ensure_loaded wait for eviction."""
+    executor = GPUExecutor(max_queue_size=10)
+    manager = ModelResidencyManager(executor, residency_budget_mb=3000.0)
+
+    unload_started = threading.Event()
+    block_unload = threading.Event()
+
+    class SlowUnloadAdapter:
+        def __init__(self):
+            self.model_name = "test-slow-unload"
+            self.model_memory_mb = 1500.0
+            self._loaded = True
+
+        def is_loaded(self):
+            return self._loaded
+
+        def load(self):
+            self._loaded = True
+
+        def unload(self):
+            unload_started.set()
+            block_unload.wait(timeout=2.0)
+            self._loaded = False
+
+    ad = SlowUnloadAdapter()
+    manager.register_adapter("embed", ad)
+    manager._states["embed"] = ModelState.READY
+
+    # Start unload on background thread
+    t_unload = threading.Thread(target=lambda: manager.unload("embed"))
+    t_unload.start()
+
+    assert unload_started.wait(timeout=2.0)
+    assert manager.get_state("embed") == ModelState.EVICTING
+
+    # While EVICTING, test acquire_lease waits for eviction to complete
+    lease_acquired = threading.Event()
+
+    def try_acquire():
+        manager.acquire_lease("embed", timeout=2.0)
+        lease_acquired.set()
+
+    t_lease = threading.Thread(target=try_acquire)
+    t_lease.start()
+
+    time.sleep(0.05)
+    assert not lease_acquired.is_set()  # Waiting for eviction!
+
+    # Unblock unload
+    block_unload.set()
+    t_unload.join(timeout=2.0)
+    t_lease.join(timeout=2.0)
+
+    assert lease_acquired.is_set()
+    assert manager.get_state("embed") == ModelState.UNLOADED
+
+    manager.release_lease("embed")
+    executor.shutdown()
+
+
+def test_model_manager_lock_not_held_across_adapter_callbacks():
+    """Verify that adapter load/unload callbacks can safely call back into model manager without deadlocking."""
+    executor = GPUExecutor(max_queue_size=10)
+    manager = ModelResidencyManager(executor, residency_budget_mb=3000.0)
+
+    class ReentrantAdapter:
+        def __init__(self):
+            self.model_name = "reentrant-adapter"
+            self.model_memory_mb = 1000.0
+            self._loaded = False
+
+        def is_loaded(self):
+            return self._loaded
+
+        def load(self):
+            self._loaded = True
+            # Re-entrant calls into manager during load
+            _ = manager.get_memory_info()
+            _ = manager.get_state("embed")
+            manager.touch("embed")
+
+        def unload(self):
+            self._loaded = False
+            # Re-entrant calls into manager during unload
+            _ = manager.get_memory_info()
+            _ = manager.get_state("embed")
+            manager.touch("embed")
+
+    ad = ReentrantAdapter()
+    manager.register_adapter("embed", ad)
+
+    # Ensure loaded executes reentrant load without deadlock
+    manager.ensure_loaded("embed")
+    assert ad.is_loaded()
+    assert manager.get_state("embed") == ModelState.READY
+
+    # Unload executes reentrant unload without deadlock
+    manager.unload("embed")
+    assert not ad.is_loaded()
+    assert manager.get_state("embed") == ModelState.UNLOADED
+
+    executor.shutdown()

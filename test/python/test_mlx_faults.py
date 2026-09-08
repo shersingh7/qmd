@@ -102,14 +102,47 @@ def test_host_side_alloc_failure_does_not_shrink_batch_budget():
 
 
 def test_ephemeral_server_fault_responses():
-    """Start an ephemeral server and test status code mappings over HTTP."""
-    server, thread = start_server(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        port=0,
-        bind_host="127.0.0.1",
-        preload=True,
-        warmup=False,
-    )
+    """Start an ephemeral server and test status code mappings over HTTP completely offline."""
+    from unittest.mock import MagicMock
+    from scripts.qmd_mlx.server import ThreadedMLXServer, MLXHTTPRequestHandler, ServerState
+    from scripts.qmd_mlx.protocol import DeadlineExceededError
+
+    server = ThreadedMLXServer(("127.0.0.1", 0), MLXHTTPRequestHandler)
+
+    mock_executor = MagicMock()
+    mock_executor.is_alive.return_value = True
+    server.executor = mock_executor
+
+    mock_runtime = MagicMock()
+    mock_runtime.model_name = "mock-embedding-model"
+    mock_runtime.native_dims = 384
+    mock_runtime.get_descriptor.return_value = {
+        "version": 1,
+        "backend": "mlx",
+        "model": "mock-embedding-model",
+        "nativeDimensions": 384,
+        "outputDimensions": 384,
+        "normalized": True,
+    }
+
+    def mock_submit_embed(texts, requested_dims=None, is_query=False, timeout=300.0, cancel_event=None, deadline=None):
+        if timeout is not None and timeout <= 0.1:
+            raise DeadlineExceededError(f"Request deadline expired (timeout={timeout})")
+        if deadline is not None and time.monotonic() > deadline:
+            raise DeadlineExceededError("Request deadline exceeded")
+        arr = np.ones((len(texts), requested_dims or 384), dtype=np.float32)
+        # Normalize
+        arr = arr / np.linalg.norm(arr, axis=-1, keepdims=True)
+        return arr
+
+    mock_runtime.submit_embed.side_effect = mock_submit_embed
+    server.runtime = mock_runtime
+    server.state = ServerState.READY
+
+    import threading
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
     port = server.server_port
     base_url = f"http://127.0.0.1:{port}"
 
@@ -167,18 +200,17 @@ def test_ephemeral_server_fault_responses():
             assert "embeddings" in data
             assert len(data["embeddings"]) == 1
 
-        # 5. Expired timeout header -> 504
+        # 5. Expired / short timeout header -> exact 504 DeadlineExceededError
         req = urllib.request.Request(
             f"{base_url}/embed",
             data=json.dumps({"texts": ["timeout test"]}).encode(),
-            headers={"Content-Type": "application/json", "X-Timeout": "0.001"},
+            headers={"Content-Type": "application/json", "X-Request-Timeout": "0.001"},
         )
-        # Note: Depending on timing, this may succeed if under 1ms or raise 504
-        try:
-            with urllib.request.urlopen(req) as resp:
-                pass
-        except urllib.error.HTTPError as he:
-            assert he.code in (504, 400)
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req)
+        assert exc_info.value.code == 504
+        body = json.loads(exc_info.value.read().decode())
+        assert body.get("type") == "deadline_exceeded"
 
     finally:
         server.shutdown()

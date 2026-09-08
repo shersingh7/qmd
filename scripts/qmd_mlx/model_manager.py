@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
+from .adapters.embedding import estimate_model_memory_mb, infer_model_params_b
 from .executor import GPUExecutor
 from .protocol import (
     DeadlineExceededError,
@@ -32,6 +33,7 @@ class ModelState:
     LOADING = "loading"
     READY = "ready"
     FAILED = "failed"
+    EVICTING = "evicting"
 
 
 def calculate_residency_budget_mb(ram_gb: float) -> float:
@@ -108,6 +110,8 @@ class ModelResidencyManager:
         # Single-flight synchronization lock
         self._lock = threading.Lock()
         self._loading_events: Dict[str, threading.Event] = {}
+        self._evicting_events: Dict[str, threading.Event] = {}
+        self._leases: Dict[str, int] = {}
 
         self.peak_memory_mb: float = 0.0
 
@@ -133,6 +137,42 @@ class ModelResidencyManager:
     def get_error(self, stage: str) -> Optional[str]:
         with self._lock:
             return self._errors.get(stage)
+
+    def acquire_lease(self, stage: str, timeout: Optional[float] = None) -> bool:
+        """
+        Pins a stage in memory with an active lease to prevent idle or LRU eviction.
+        If the stage is currently in the process of eviction (EVICTING),
+        waits for eviction to complete before acquiring lease.
+        """
+        dl = (time.monotonic() + timeout) if timeout is not None else None
+        while True:
+            with self._lock:
+                state = self._states.get(stage, ModelState.UNLOADED)
+                if state != ModelState.EVICTING:
+                    self._leases[stage] = self._leases.get(stage, 0) + 1
+                    self._last_active[stage] = time.monotonic()
+                    return True
+                ev_event = self._evicting_events.get(stage)
+
+            if ev_event is not None:
+                rem = (dl - time.monotonic()) if dl is not None else 30.0
+                if rem <= 0 or not ev_event.wait(timeout=min(0.5, max(0.01, rem))):
+                    if dl is not None and time.monotonic() >= dl:
+                        raise DeadlineExceededError(f"Timed out acquiring lease on evicting stage '{stage}'")
+            else:
+                time.sleep(0.01)
+                if dl is not None and time.monotonic() >= dl:
+                    raise DeadlineExceededError(f"Timed out acquiring lease on stage '{stage}'")
+
+    def release_lease(self, stage: str):
+        """Releases an active lifecycle lease on a stage."""
+        with self._lock:
+            cur = self._leases.get(stage, 0)
+            if cur <= 1:
+                self._leases.pop(stage, None)
+            else:
+                self._leases[stage] = cur - 1
+            self._last_active[stage] = time.monotonic()
 
     def touch(self, stage: str):
         with self._lock:
@@ -169,7 +209,7 @@ class ModelResidencyManager:
         total = 0.0
         for st, ad in self._adapters.items():
             if self._states.get(st) == ModelState.READY and getattr(ad, "is_loaded", lambda: False)():
-                total += getattr(ad, "model_memory_mb", 0.0) or getattr(ad, "estimated_memory_mb", 1000.0)
+                total += getattr(ad, "model_memory_mb", 0.0) or self._estimate_adapter_mb(ad)
         return total
 
     def _estimate_adapter_mb(self, adapter: Any) -> float:
@@ -177,15 +217,10 @@ class ModelResidencyManager:
             return float(adapter.model_memory_mb)
         if hasattr(adapter, "estimated_memory_mb") and adapter.estimated_memory_mb > 0:
             return float(adapter.estimated_memory_mb)
-        # Default estimates based on model attributes if available
-        name = getattr(adapter, "model_name", "").lower()
-        if "4b" in name or "rerank" in name:
-            return 4500.0
-        if "1.7b" in name or "generate" in name:
-            return 2500.0
-        if "nomic" in name or "bert" in name:
-            return 1200.0
-        return 800.0
+        name = getattr(adapter, "model_name", "")
+        quant = getattr(adapter, "quantization", None)
+        params_b = getattr(adapter, "model_params_b", None)
+        return estimate_model_memory_mb(name, quant, params_b)
 
     def _is_owner_thread(self) -> bool:
         return hasattr(self.executor, "is_owner_thread") and self.executor.is_owner_thread()
@@ -193,7 +228,8 @@ class ModelResidencyManager:
     def _evict_for_budget_under_owner(self, stage: str, needed_mb: float):
         """
         Runs on GPU executor thread: evicts least-recently-used ready models
-        (other than `stage`) until `needed_mb` fits within `residency_budget_mb`.
+        (other than `stage` and unleased) until `needed_mb` fits within `residency_budget_mb`.
+        Atomically reserves candidates under self._lock as EVICTING before executing unloads outside lock.
         Raises OutOfMemoryError if insufficient headroom can be achieved.
         """
         # If needed_mb alone exceeds residency budget, reject before attempting evictions
@@ -206,29 +242,48 @@ class ModelResidencyManager:
         if current + needed_mb <= self.residency_budget_mb:
             return
 
-        # Find candidates for eviction (must be READY and not currently requested stage)
-        candidates = []
-        for st, ad in self._adapters.items():
-            if st != stage and self._states.get(st) == ModelState.READY and getattr(ad, "is_loaded", lambda: False)():
-                candidates.append((self._last_active.get(st, 0.0), st, ad))
+        candidates_to_unload = []
+        with self._lock:
+            candidates = []
+            for st, ad in self._adapters.items():
+                if (
+                    st != stage
+                    and self._states.get(st) == ModelState.READY
+                    and getattr(ad, "is_loaded", lambda: False)()
+                    and self._leases.get(st, 0) == 0
+                ):
+                    candidates.append((self._last_active.get(st, 0.0), st, ad))
 
-        # Sort by oldest last_active first (LRU)
-        candidates.sort(key=lambda c: c[0])
+            # Sort by oldest last_active first (LRU)
+            candidates.sort(key=lambda c: c[0])
 
-        for _, cand_stage, cand_adapter in candidates:
-            if current + needed_mb <= self.residency_budget_mb:
-                break
-            try:
+            for _, cand_stage, cand_adapter in candidates:
+                if current + needed_mb <= self.residency_budget_mb:
+                    break
+                # Double-check lease under lock
+                if self._leases.get(cand_stage, 0) > 0:
+                    continue
+                # Atomically mark as EVICTING and register event so concurrent lease/load waits
+                self._states[cand_stage] = ModelState.EVICTING
+                ev_event = threading.Event()
+                self._evicting_events[cand_stage] = ev_event
                 ad_mb = getattr(cand_adapter, "model_memory_mb", 0.0) or self._estimate_adapter_mb(cand_adapter)
+                current = max(0.0, current - ad_mb)
+                candidates_to_unload.append((cand_stage, cand_adapter, ev_event))
+
+        for cand_stage, cand_adapter, ev_event in candidates_to_unload:
+            try:
                 cand_adapter.unload()
-                with self._lock:
-                    self._states[cand_stage] = ModelState.UNLOADED
                 if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
                     mx.clear_cache()
-                current = max(0.0, current - ad_mb)
                 print(f"[mlx-manager] Evicted LRU stage '{cand_stage}' to free memory for '{stage}'")
             except Exception as e:
                 print(f"[mlx-manager] Failed to evict '{cand_stage}': {e}", file=sys.stderr)
+            finally:
+                with self._lock:
+                    self._states[cand_stage] = ModelState.UNLOADED
+                    self._evicting_events.pop(cand_stage, None)
+                    ev_event.set()
 
         # Re-verify resident headroom after eviction
         current = self._get_resident_model_mb()
@@ -280,12 +335,13 @@ class ModelResidencyManager:
                     f"Loaded model '{stage}' actual size ({actual_mb:.1f}MB) exceeds total residency budget ({self.residency_budget_mb:.1f}MB)"
                 )
 
-            current_resident = self._get_resident_model_mb()
-            if current_resident > self.residency_budget_mb:
-                # Evict other models if actual size turned out larger than estimate
-                self._evict_for_budget_under_owner(stage, 0.0)
-                current_resident = self._get_resident_model_mb()
-                if current_resident > self.residency_budget_mb:
+            # Check combined residency: other ready models + actual_mb of newly loaded stage
+            current_other_resident = self._get_resident_model_mb()
+            if current_other_resident + actual_mb > self.residency_budget_mb:
+                # Evict other ready models to make room for the actual size of newly loaded model
+                self._evict_for_budget_under_owner(stage, actual_mb)
+                current_other_resident = self._get_resident_model_mb()
+                if current_other_resident + actual_mb > self.residency_budget_mb:
                     try:
                         adapter.unload()
                         if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
@@ -293,7 +349,7 @@ class ModelResidencyManager:
                     except Exception:
                         pass
                     raise OutOfMemoryError(
-                        f"Resident memory ({current_resident:.1f}MB) exceeds residency budget ({self.residency_budget_mb:.1f}MB) after loading '{stage}'"
+                        f"Resident memory ({current_other_resident + actual_mb:.1f}MB) exceeds residency budget ({self.residency_budget_mb:.1f}MB) after loading '{stage}'"
                     )
 
             with self._lock:
@@ -302,6 +358,13 @@ class ModelResidencyManager:
                 self._last_active[stage] = time.monotonic()
             self.update_peak_memory()
         except Exception as exc:
+            try:
+                if getattr(adapter, "is_loaded", lambda: False)():
+                    adapter.unload()
+                if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+            except Exception:
+                pass
             with self._lock:
                 self._states[stage] = ModelState.FAILED
                 self._errors[stage] = str(exc)
@@ -329,6 +392,18 @@ class ModelResidencyManager:
         now = time.monotonic()
         dl = deadline if deadline is not None else (now + timeout_s)
         is_owner = self._is_owner_thread()
+
+        # If stage is currently evicting, wait for eviction to finish first
+        while True:
+            with self._lock:
+                state = self._states.get(stage)
+                ev_event = self._evicting_events.get(stage)
+            if state != ModelState.EVICTING or ev_event is None:
+                break
+            rem = max(0.01, dl - time.monotonic())
+            if not ev_event.wait(timeout=min(0.5, rem)):
+                if time.monotonic() > dl:
+                    raise DeadlineExceededError(f"Timed out waiting for eviction of '{stage}' to complete")
 
         with self._lock:
             adapter = self._adapters.get(stage)
@@ -400,31 +475,54 @@ class ModelResidencyManager:
 
     def unload(self, stage: str):
         """Unloads a stage model from unified memory (runs on owner thread)."""
+        # If currently evicting, wait for eviction
         with self._lock:
             adapter = self._adapters.get(stage)
             if adapter is None:
                 return
+            ev_event = self._evicting_events.get(stage)
+
+        if ev_event is not None:
+            ev_event.wait(timeout=5.0)
 
         def _do_unload():
+            ev = None
             try:
-                adapter.unload()
                 with self._lock:
-                    self._states[stage] = ModelState.UNLOADED
-                    self._errors[stage] = None
+                    if self._states.get(stage) == ModelState.EVICTING:
+                        return
+                    self._states[stage] = ModelState.EVICTING
+                    ev = threading.Event()
+                    self._evicting_events[stage] = ev
+
+                adapter.unload()
                 if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
                     mx.clear_cache()
                 print(f"[mlx-manager] Unloaded stage '{stage}' (active: {self._get_active_memory_mb():.1f}MB)")
             except Exception as e:
                 print(f"[mlx-manager] Error unloading '{stage}': {e}", file=sys.stderr)
+            finally:
+                with self._lock:
+                    self._states[stage] = ModelState.UNLOADED
+                    self._errors[stage] = None
+                    if ev is not None:
+                        self._evicting_events.pop(stage, None)
+                        ev.set()
 
         if self._is_owner_thread():
             _do_unload()
-        elif self.executor.is_alive():
+        elif self.executor.is_worker_alive():
+            # Submit to owner thread. If worker thread is alive, NEVER execute off-owner!
             try:
                 self.executor.submit(_do_unload, priority=0, timeout_s=30.0, description=f"Unload {stage}")
             except Exception:
-                _do_unload()
+                # If submission was rejected (e.g. executor shutting down), wait for worker thread to stop/join
+                if hasattr(self.executor, "join_worker"):
+                    self.executor.join_worker(timeout=5.0)
+                if not self.executor.is_worker_alive():
+                    _do_unload()
         else:
+            # Executor worker thread is stopped and joined; safe to unload on caller thread
             _do_unload()
 
     def unload_all(self):
@@ -440,30 +538,41 @@ class ModelResidencyManager:
             return
 
         now = time.monotonic()
+        stages_to_unload = []
         with self._lock:
-            stages = list(self._adapters.keys())
-
-        for stage in stages:
-            with self._lock:
-                adapter = self._adapters.get(stage)
+            for stage, adapter in self._adapters.items():
                 state = self._states.get(stage)
                 last_act = self._last_active.get(stage, now)
+                is_leased = self._leases.get(stage, 0) > 0
 
-            if adapter and state == ModelState.READY and getattr(adapter, "is_loaded", lambda: False)():
-                idle_time = now - last_act
-                if idle_time >= self.idle_unload_s:
-                    try:
-                        adapter.unload()
-                        with self._lock:
-                            self._states[stage] = ModelState.UNLOADED
-                        if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
-                            mx.clear_cache()
-                        print(
-                            f"[mlx-manager] Stage '{stage}' idle for {idle_time:.0f}s — "
-                            f"unloaded ({self._get_active_memory_mb():.0f}MB active Metal)"
-                        )
-                    except Exception as e:
-                        print(f"[mlx-manager] Idle unload for '{stage}' failed: {e}", file=sys.stderr)
+                if is_leased or state == ModelState.EVICTING:
+                    continue
+
+                if adapter and state == ModelState.READY and getattr(adapter, "is_loaded", lambda: False)():
+                    idle_time = now - last_act
+                    if idle_time >= self.idle_unload_s:
+                        # Atomically commit EVICTING state under lock
+                        self._states[stage] = ModelState.EVICTING
+                        ev_event = threading.Event()
+                        self._evicting_events[stage] = ev_event
+                        stages_to_unload.append((stage, adapter, idle_time, ev_event))
+
+        for stage, adapter, idle_time, ev_event in stages_to_unload:
+            try:
+                adapter.unload()
+                if _MLX_AVAILABLE and hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                print(
+                    f"[mlx-manager] Stage '{stage}' idle for {idle_time:.0f}s — "
+                    f"unloaded ({self._get_active_memory_mb():.0f}MB active Metal)"
+                )
+            except Exception as e:
+                print(f"[mlx-manager] Idle unload for '{stage}' failed: {e}", file=sys.stderr)
+            finally:
+                with self._lock:
+                    self._states[stage] = ModelState.UNLOADED
+                    self._evicting_events.pop(stage, None)
+                    ev_event.set()
 
     def get_memory_info(self) -> dict[str, Any]:
         with self._lock:

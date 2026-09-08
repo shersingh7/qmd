@@ -148,6 +148,8 @@ class MLXGenerateAdapter:
         if not chat_formatted:
             formatted_prompt = prompt
 
+        t0 = time.time()
+
         toks = self.raw_hf_tokenizer.encode(formatted_prompt)
         if len(toks) > self.max_context - self.max_new_tokens:
             raise GenerateError(
@@ -193,10 +195,23 @@ class MLXGenerateAdapter:
                 text = text[len(OPEN):]
         text = text.strip()
 
+        # Count tokens accurately
+        if pieces:
+            num_tokens = len(pieces)
+        elif self.raw_hf_tokenizer is not None:
+            num_tokens = len(self.raw_hf_tokenizer.encode(text))
+        else:
+            num_tokens = max(1, len(text.split()))
+
+        latency_ms = (time.time() - t0) * 1000
+        self.total_requests += 1
+        self.total_tokens_generated += num_tokens
+        self.total_latency_ms += latency_ms
+
         if self.model_manager is not None:
             self.model_manager.touch("generate")
 
-        return text, max(0, len(text))
+        return text, num_tokens
 
     def submit_generate(
         self,
@@ -240,6 +255,14 @@ class MLXGenerateAdapter:
         self.submit_generate("/no_think warmup", max_tokens=4, timeout=30.0)
         print("[mlx-generate] Warmup complete ✓")
 
+    def get_stats_info(self) -> dict[str, Any]:
+        avg_ms = round(self.total_latency_ms / self.total_requests, 2) if self.total_requests > 0 else 0.0
+        return {
+            "total_requests": self.total_requests,
+            "total_tokens_generated": self.total_tokens_generated,
+            "avg_ms": avg_ms,
+        }
+
     def get_descriptor(self) -> dict[str, Any]:
         return {
             "version": 1,
@@ -254,10 +277,13 @@ class MLXGenerateAdapter:
     def shutdown(self):
         if self.executor and hasattr(self.executor, "is_owner_thread") and self.executor.is_owner_thread():
             self.unload()
-        elif self.executor and hasattr(self.executor, "is_alive") and self.executor.is_alive():
+        elif self.executor and hasattr(self.executor, "is_worker_alive") and self.executor.is_worker_alive():
             try:
                 self.executor.submit(self.unload, priority=0, timeout_s=10.0, description="Unload generate")
             except Exception:
-                self.unload()
+                if hasattr(self.executor, "join_worker"):
+                    self.executor.join_worker(timeout=5.0)
+                if not self.executor.is_worker_alive():
+                    self.unload()
         else:
             self.unload()

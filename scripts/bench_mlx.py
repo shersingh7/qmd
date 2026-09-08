@@ -48,48 +48,48 @@ def run_benchmark(
         warmup=True,
     )
 
-    base_url = f"http://127.0.0.1:{port}"
-
-    # Wait for ready
-    for _ in range(100):
-        try:
-            r = requests.get(f"{base_url}/ready", timeout=1)
-            if r.status_code == 200 and r.json().get("ready"):
-                break
-        except Exception:
-            pass
-        time.sleep(0.1)
-
-    # Fetch descriptor
-    desc = requests.get(f"{base_url}/descriptor").json()
-    print(f"[bench] Model descriptor: {desc['model']} ({desc['outputDimensions']}d, {desc['pooling']})")
-
-    # Sample texts of varying lengths
-    sample_corpus = [
-        "Apple Silicon M-series chips feature unified memory architecture for zero-copy CPU-GPU data sharing.",
-        "SQLite FTS5 provides fast full-text search with BM25 ranking algorithms.",
-        "Vector embeddings map semantic document concepts into continuous vector spaces.",
-        "Reciprocal Rank Fusion merges rankings from BM25 and vector similarity searches.",
-        "Tree-sitter AST chunking splits code files at class, function, and interface boundaries.",
-        "Metal performance shaders compile compute graphs directly into optimized GPU kernels.",
-        "Zero-copy binary serialization eliminates JSON serialization overhead in high-throughput pipelines.",
-        "Local RAG pipelines on macOS achieve high throughput with low memory footprint.",
-    ]
-
-    results: dict[str, Any] = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "platform": {
-            "system": platform.system(),
-            "machine": platform.machine(),
-            "processor": platform.processor(),
-            "version": platform.version(),
-            "python": platform.python_version(),
-        },
-        "descriptor": desc,
-        "benchmarks": [],
-    }
-
     try:
+        base_url = f"http://127.0.0.1:{port}"
+
+        # Wait for ready
+        for _ in range(100):
+            try:
+                r = requests.get(f"{base_url}/ready", timeout=1)
+                if r.status_code == 200 and r.json().get("ready"):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        # Fetch descriptor
+        desc = requests.get(f"{base_url}/descriptor").json()
+        print(f"[bench] Model descriptor: {desc['model']} ({desc['outputDimensions']}d, {desc['pooling']})")
+
+        # Sample texts of varying lengths
+        sample_corpus = [
+            "Apple Silicon M-series chips feature unified memory architecture for zero-copy CPU-GPU data sharing.",
+            "SQLite FTS5 provides fast full-text search with BM25 ranking algorithms.",
+            "Vector embeddings map semantic document concepts into continuous vector spaces.",
+            "Reciprocal Rank Fusion merges rankings from BM25 and vector similarity searches.",
+            "Tree-sitter AST chunking splits code files at class, function, and interface boundaries.",
+            "Metal performance shaders compile compute graphs directly into optimized GPU kernels.",
+            "Zero-copy binary serialization eliminates JSON serialization overhead in high-throughput pipelines.",
+            "Local RAG pipelines on macOS achieve high throughput with low memory footprint.",
+        ]
+
+        results: dict[str, Any] = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                "processor": platform.processor(),
+                "version": platform.version(),
+                "python": platform.python_version(),
+            },
+            "descriptor": desc,
+            "benchmarks": [],
+        }
+
         for batch_size in batches:
             texts = [sample_corpus[i % len(sample_corpus)] for i in range(batch_size)]
             payload = {"texts": texts}

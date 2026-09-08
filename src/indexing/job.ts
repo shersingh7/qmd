@@ -155,7 +155,7 @@ export async function runDurableIndexingJob(
   }
 
   const currentSig = computeDescriptorSignature(descriptor);
-  const targetModel = options?.model || "default";
+  const effectiveModel = options?.model || descriptor?.model || "default";
   const targetStrategy: ChunkStrategy = options?.chunkStrategy ?? "regex";
 
   let existing = getActiveCheckpoint(db);
@@ -163,7 +163,7 @@ export async function runDurableIndexingJob(
     const existingStrategy = existing.fingerprint.chunkStrategy ?? "regex";
     const existingModel = existing.fingerprint.model || "default";
     const sigMismatch = existing.fingerprint.descriptorSignature !== currentSig;
-    const modelMismatch = existingModel !== targetModel;
+    const modelMismatch = existingModel !== effectiveModel;
     const strategyMismatch = existingStrategy !== targetStrategy;
     const dimMismatch =
       descriptor?.outputDimensions !== undefined &&
@@ -175,7 +175,7 @@ export async function runDurableIndexingJob(
         `Checkpoint fingerprint mismatch detected (descriptor: ${sigMismatch}, model: ${modelMismatch}, chunkStrategy: ${strategyMismatch}, dims: ${dimMismatch}). Automatic destructive migration is prohibited to prevent vector loss. Actionable message: explicit rebuild on isolated shadow index required (or specify options.force: true to explicitly overwrite).`,
         existing.fingerprint,
         {
-          model: targetModel,
+          model: effectiveModel,
           dimensions: descriptor?.outputDimensions || 0,
           chunkStrategy: targetStrategy,
           descriptorSignature: currentSig,
@@ -188,7 +188,7 @@ export async function runDurableIndexingJob(
   const cp: IndexingJobCheckpoint = (existing && !options?.force) ? existing : {
     jobId,
     fingerprint: {
-      model: descriptor?.model || targetModel,
+      model: effectiveModel,
       dimensions: descriptor?.outputDimensions || 0,
       chunkStrategy: targetStrategy,
       descriptorSignature: currentSig,

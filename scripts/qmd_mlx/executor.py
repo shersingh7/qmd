@@ -63,6 +63,30 @@ class GPUExecutor:
         with self._cv:
             return self._running and self._worker_thread.is_alive()
 
+    def is_accepting(self) -> bool:
+        """Returns True if the executor is active and accepting new submissions."""
+        with self._cv:
+            return self._running
+
+    def is_worker_alive(self) -> bool:
+        """Returns True if the underlying OS worker thread is currently running."""
+        return self._worker_thread.is_alive()
+
+    def is_overloaded(self) -> bool:
+        """Returns True if the internal priority queue is at maximum capacity."""
+        with self._cv:
+            return len(self._queue) >= self.max_queue_size
+
+    def get_queue_depth(self) -> int:
+        """Returns current pending queue length under lock."""
+        with self._cv:
+            return len(self._queue)
+
+    def join_worker(self, timeout: float = 5.0):
+        """Waits for the background worker thread to join."""
+        if self._worker_thread.is_alive() and threading.current_thread() != self._worker_thread:
+            self._worker_thread.join(timeout=timeout)
+
     def is_owner_thread(self) -> bool:
         """Returns True if the current thread is the dedicated GPU worker thread."""
         return threading.current_thread() == self._worker_thread
@@ -116,7 +140,8 @@ class GPUExecutor:
             raise DeadlineExceededError(
                 f"Request '{description}' timed out after {timeout_s:.1f}s (deadline exceeded)"
             )
-        except Exception:
+        except BaseException:
+            event.set()
             raise
 
     def submit_async(

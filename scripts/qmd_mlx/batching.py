@@ -85,19 +85,39 @@ class BatchPlanner:
     ):
         self._explicit_budget = max_batch_tokens or 0
         self._ram_fn = system_ram_gb_fn
+        self._oom_halvings: int = 0
+        self._tuned_model_params_b: Optional[float] = None
         self.max_batch_tokens = max_batch_tokens or calculate_default_max_batch_tokens(
             model_params_b=model_params_b,
             system_ram_gb_fn=self._ram_fn,
         )
+        if not self._explicit_budget:
+            self._tuned_model_params_b = float(model_params_b)
 
     def tune_for_model(self, model_params_b: float) -> int:
-        """Re-scale the token budget once the loaded model's size is known."""
+        """
+        Re-scale the token budget once the loaded model's size is known.
+        Preserves any adaptive OOM reduction factor previously applied.
+        Does NOT overwrite on repeated calls with unchanged model params.
+        """
         if self._explicit_budget > 0:
             return self.max_batch_tokens
-        self.max_batch_tokens = calculate_default_max_batch_tokens(
-            model_params_b=model_params_b,
+
+        pb = float(model_params_b or 0.6)
+        if self._tuned_model_params_b is not None and abs(self._tuned_model_params_b - pb) < 1e-4:
+            # Already tuned for this model, preserve adaptive OOM reduction
+            return self.max_batch_tokens
+
+        self._tuned_model_params_b = pb
+        base_tokens = calculate_default_max_batch_tokens(
+            model_params_b=pb,
             system_ram_gb_fn=self._ram_fn,
         )
+        # Apply existing OOM halvings if any
+        for _ in range(self._oom_halvings):
+            base_tokens = max(512, base_tokens // 2)
+
+        self.max_batch_tokens = base_tokens
         return self.max_batch_tokens
 
     def plan_micro_batches(
@@ -240,6 +260,7 @@ class BatchPlanner:
                 )
             if is_oom:
                 # Reduce future batch token budget on OOM to prevent future failures
+                self._oom_halvings += 1
                 self.max_batch_tokens = max(512, self.max_batch_tokens // 2)
                 if len(batch) > 1 and depth < 3:
                     mid = len(batch) // 2

@@ -16,11 +16,9 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT="${MLX_PORT:-8787}"
 VENV_PY="$REPO/.venv/bin/python"
 
-# Production = embed-only daemon. Rerank/expansion stay in-process GGUF
-# (measured: GGUF ranks hard queries better). Set MLX_RERANK_MODEL /
-# MLX_GENERATE_MODEL explicitly to opt into those adapters; there is
-# deliberately no default (an idle-unload story for those adapters does not
-# exist yet — see docs/benchmarks/all-mlx-results.md).
+# Production = embed-only daemon by default. Rerank/expansion stay in-process GGUF
+# unless opted in. Set MLX_RERANK_MODEL / MLX_GENERATE_MODEL explicitly to enable
+# unified daemon serving (managed by ModelResidencyManager with shared budget and idle unload).
 # Default: local affine 4-bit build (scripts/convert-qwen3-embedding-4b.sh) —
 # measured better recall (84% vs 80%) AND faster kernels (22.1 vs 18.7 t/s)
 # than the community DWQ build. Override with MLX_EMBED_MODEL.

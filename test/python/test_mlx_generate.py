@@ -5,6 +5,7 @@ test_mlx_generate.py — Unit tests for MLX generate adapter (real model, Metal)
 import pytest
 
 
+@pytest.mark.real_model
 def test_generate_adapter_loads():
     from scripts.qmd_mlx.generate import MLXGenerateAdapter
     a = MLXGenerateAdapter(model_name="mlx-community/Qwen3-1.7B-4bit")
@@ -15,6 +16,7 @@ def test_generate_adapter_loads():
     a.shutdown()
 
 
+@pytest.mark.real_model
 def test_generate_determinism_and_bounds():
     from scripts.qmd_mlx.generate import MLXGenerateAdapter
     a = MLXGenerateAdapter(model_name="mlx-community/Qwen3-1.7B-4bit")
@@ -28,9 +30,38 @@ def test_generate_determinism_and_bounds():
         a.shutdown()
 
 
+def test_generate_token_counting_and_stats():
+    from unittest.mock import patch, MagicMock
+    from scripts.qmd_mlx.generate import MLXGenerateAdapter
+
+    a = MLXGenerateAdapter(model_name="fake-gen-model", lazy_load=True)
+    a.model = MagicMock()
+    a.tokenizer = MagicMock()
+    a.raw_hf_tokenizer = MagicMock()
+    a.raw_hf_tokenizer.encode.return_value = [1, 2, 3]
+    a.raw_hf_tokenizer.apply_chat_template.side_effect = Exception("no template")
+
+    class StreamChunk:
+        def __init__(self, text):
+            self.text = text
+
+    chunks = [StreamChunk(f"word{i} ") for i in range(7)]
+
+    with patch("scripts.qmd_mlx.generate.mlx_lm.stream_generate", return_value=iter(chunks)):
+        out = a._generate_sync("prompt text", max_tokens=20, temperature=0.0)
+        assert "word0 word1 word2 word3 word4 word5 word6" in out
+
+    assert a.total_tokens_generated == 7
+    assert a.total_requests == 1
+    stats = a.get_stats_info()
+    assert stats["total_tokens_generated"] == 7
+    assert stats["total_requests"] == 1
+    assert stats["avg_ms"] >= 0.0
+
+
 def test_generate_rejects_invalid_input():
     from scripts.qmd_mlx.generate import MLXGenerateAdapter, GenerateError
-    a = MLXGenerateAdapter(model_name="mlx-community/Qwen3-1.7B-4bit", lazy_load=True)
+    a = MLXGenerateAdapter(model_name="fake-gen-model", lazy_load=True)
     try:
         with pytest.raises(GenerateError):
             a.submit_generate("")

@@ -19,6 +19,7 @@ from .protocol import (
 
 try:
     import mlx.core as mx
+    import mlx.nn as nn
     import mlx_lm
     _MLX_AVAILABLE = True
 except ImportError:
@@ -170,17 +171,6 @@ class MLXRerankAdapter:
         """Formats query-document pair with the official Qwen3-Reranker prompt."""
         if not isinstance(document, str) or not document.strip():
             raise RerankError("Document text is empty or whitespace.")
-
-        query_text = f"<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: "
-        query_toks = len(self.raw_hf_tokenizer.encode(query_text))
-
-        safe_doc_budget = max(64, self.max_length - query_toks - 120)
-        doc_toks = self.raw_hf_tokenizer.encode(document)
-        if len(doc_toks) > safe_doc_budget:
-            raise RerankError(
-                f"Document token length ({len(doc_toks)}) exceeds max safe budget ({safe_doc_budget}) for reranker"
-            )
-
         return (
             f"<|im_start|>system\n{self.DEFAULT_SYSTEM_PROMPT}<|im_end|>\n"
             f"<|im_start|>user\n<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: {document}"
@@ -212,6 +202,11 @@ class MLXRerankAdapter:
         if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1 or batch_size > 32:
             raise RerankError(f"batch_size must be an integer in [1, 32], got {batch_size}")
 
+        if deadline is not None and time.monotonic() > deadline:
+            raise DeadlineExceededError("Request deadline exceeded before reranking started")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelledError("Request cancelled before reranking started")
+
         if not self.is_loaded():
             if self.model_manager is not None:
                 self.model_manager.ensure_loaded("rerank", deadline=deadline, cancel_event=cancel_event)
@@ -220,10 +215,23 @@ class MLXRerankAdapter:
 
         t0 = time.time()
 
-        # Format and tokenize
-        seqs = [self.raw_hf_tokenizer.encode(self._format_pair(query, doc)) for doc in documents]
-        if any(len(s) == 0 for s in seqs):
-            raise RerankError("Empty token sequence after formatting")
+        # Precompute query token budget once for the entire batch
+        query_text = f"<Instruct>: {self.DEFAULT_INSTRUCT}\n\n<Query>: {query}\n\n<Document>: "
+        query_toks = len(self.raw_hf_tokenizer.encode(query_text))
+        safe_doc_budget = max(64, self.max_length - query_toks - 120)
+
+        # Single-pass format and tokenize per document
+        seqs: list[list[int]] = []
+        for doc in documents:
+            formatted = self._format_pair(query, doc)
+            tokens = self.raw_hf_tokenizer.encode(formatted)
+            if len(tokens) == 0:
+                raise RerankError("Empty token sequence after formatting")
+            if len(tokens) > self.max_length:
+                raise RerankError(
+                    f"Document token length ({len(tokens)}) exceeds max safe budget ({self.max_length}) for reranker"
+                )
+            seqs.append(tokens)
 
         pad_id = self.raw_hf_tokenizer.pad_token_id
         if pad_id is None:
@@ -250,17 +258,32 @@ class MLXRerankAdapter:
             lm_head = getattr(self.model, "lm_head", getattr(self.model, "head", None))
 
             # Optimization: avoid full-vocab transient allocation where feasible
-            if backbone is not None and lm_head is not None and hasattr(lm_head, "weight"):
+            if backbone is not None and lm_head is not None:
                 hidden_states = backbone(input_ids)
                 rows = mx.arange(len(batch))
                 cols = mx.array([ln - 1 for ln in lengths], dtype=mx.int32)
                 last_hidden = hidden_states[rows, cols]
-                w_yes = lm_head.weight[self.yes_token_id]
-                w_no = lm_head.weight[self.no_token_id]
-                diff_w = w_yes - w_no
-                diffs = mx.matmul(last_hidden, diff_w)
-                if hasattr(lm_head, "bias") and lm_head.bias is not None:
-                    diffs = diffs + (lm_head.bias[self.yes_token_id] - lm_head.bias[self.no_token_id])
+
+                # Check if lm_head is standard unquantized Linear with float weights
+                is_unquantized_linear = (
+                    hasattr(lm_head, "weight")
+                    and hasattr(lm_head.weight, "dtype")
+                    and mx.issubdtype(lm_head.weight.dtype, mx.floating)
+                    and not (hasattr(nn, "QuantizedLinear") and isinstance(lm_head, nn.QuantizedLinear))
+                )
+
+                if is_unquantized_linear:
+                    w_yes = lm_head.weight[self.yes_token_id]
+                    w_no = lm_head.weight[self.no_token_id]
+                    diff_w = w_yes - w_no
+                    diffs = mx.matmul(last_hidden, diff_w)
+                    if hasattr(lm_head, "bias") and lm_head.bias is not None:
+                        diffs = diffs + (lm_head.bias[self.yes_token_id] - lm_head.bias[self.no_token_id])
+                else:
+                    # QuantizedLinear or callable head: evaluate last token logits only [batch, vocab] (~300KB)
+                    last_logits = lm_head(last_hidden)
+                    diffs = last_logits[:, self.yes_token_id] - last_logits[:, self.no_token_id]
+
                 diffs_f32 = diffs.astype(mx.float32)
                 del hidden_states, last_hidden, input_ids
             else:
@@ -300,6 +323,11 @@ class MLXRerankAdapter:
         now = time.monotonic()
         to = timeout_s if timeout_s is not None else 300.0
         dl = deadline if deadline is not None else (now + to)
+        if dl is not None and time.monotonic() > dl:
+            raise DeadlineExceededError(f"Request deadline expired before reranking started (deadline={dl})")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelledError("Request cancelled before reranking started")
+
         rem = max(0.01, dl - time.monotonic())
 
         if self.executor:
@@ -337,10 +365,13 @@ class MLXRerankAdapter:
     def shutdown(self):
         if self.executor and hasattr(self.executor, "is_owner_thread") and self.executor.is_owner_thread():
             self.unload()
-        elif self.executor and hasattr(self.executor, "is_alive") and self.executor.is_alive():
+        elif self.executor and hasattr(self.executor, "is_worker_alive") and self.executor.is_worker_alive():
             try:
                 self.executor.submit(self.unload, priority=0, timeout_s=10.0, description="Unload rerank")
             except Exception:
-                self.unload()
+                if hasattr(self.executor, "join_worker"):
+                    self.executor.join_worker(timeout=5.0)
+                if not self.executor.is_worker_alive():
+                    self.unload()
         else:
             self.unload()

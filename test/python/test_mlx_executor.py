@@ -254,3 +254,29 @@ def test_executor_worker_loop_guard_keeps_serving():
     assert res == "still alive"
     assert executor.is_alive()
     executor.shutdown()
+
+
+def test_executor_submit_cancellation_on_exception():
+    """Verify that submit sets cancel_event if waiting on future raises an exception."""
+    executor = GPUExecutor(max_queue_size=10)
+    cancel_evt = threading.Event()
+
+    # Job that checks cancel_evt
+    was_cancelled = []
+
+    def long_job():
+        for _ in range(20):
+            if cancel_evt.is_set():
+                was_cancelled.append(True)
+                return "cancelled"
+            time.sleep(0.02)
+        return "completed"
+
+    # Submit with very short timeout to trigger exception
+    with pytest.raises(DeadlineExceededError):
+        executor.submit(long_job, timeout_s=0.05, cancel_event=cancel_evt)
+
+    assert cancel_evt.is_set()
+    time.sleep(0.1)
+    assert True in was_cancelled
+    executor.shutdown()

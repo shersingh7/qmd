@@ -1,0 +1,344 @@
+{
+  "instance_token": "stage-103470fa9b24",
+  "stage": "rerank",
+  "model": "~/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
+  "port": 8797,
+  "control_port": 8798,
+  "timeout_s": 60.0,
+  "status": "passed",
+  "start_time": 1789043511.2663932,
+  "checks": {
+    "server_ready": true,
+    "dynamic_token_resolution": true,
+    "quantization_descriptor_match": true,
+    "ranking_discrimination": true,
+    "singleton_batch_consistency": true,
+    "invalid_input_rejection": true,
+    "max_length_rejection": true
+  },
+  "metrics": {
+    "preflight_headroom_mb": 14909.4,
+    "startup_time_s": 4.207,
+    "fixture_p50_ms": 1147.49,
+    "batch_4docs_latency_ms": 1584.74,
+    "memory": {
+      "active_mb": 2159.4,
+      "peak_mb": 2159.4,
+      "model_mb": 2159.4
+    },
+    "stats": {
+      "total_requests": 5,
+      "total_pairs_scored": 10,
+      "avg_ms": 922.11,
+      "stage": "rerank"
+    }
+  },
+  "fixtures": {
+    "judged_pairs": [
+      {
+        "query": "REST API versioning best practices",
+        "scores": [
+          0.8740772351648677,
+          0.02931223075135632
+        ],
+        "discriminated": true,
+        "latency_ms": 1147.49
+      },
+      {
+        "query": "Distributed consensus leader election",
+        "scores": [
+          0.8872045937171068,
+          0.04742587317756678
+        ],
+        "discriminated": true,
+        "latency_ms": 1038.48
+      }
+    ],
+    "consistency": {
+      "singleton_score": 0.7981867777396212,
+      "batch_score": 0.7981867777396212,
+      "abs_diff": 0.0,
+      "passed": true
+    }
+  },
+  "errors": [],
+  "telemetry_samples": [
+    {
+      "timestamp": 1789043511.34,
+      "elapsed_s": 0.1,
+      "rss_mb": null,
+      "swap_used_mb": null,
+      "swap_growth_mb": null,
+      "memory_free_pct": null
+    },
+    {
+      "timestamp": 1789043511.62,
+      "elapsed_s": 0.4,
+      "rss_mb": 75.34375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043511.92,
+      "elapsed_s": 0.69,
+      "rss_mb": 86.03125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043512.21,
+      "elapsed_s": 0.98,
+      "rss_mb": 86.171875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043512.5,
+      "elapsed_s": 1.29,
+      "rss_mb": 146.25,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043512.81,
+      "elapsed_s": 1.58,
+      "rss_mb": 217.53125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043513.09,
+      "elapsed_s": 1.86,
+      "rss_mb": 250.484375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043513.38,
+      "elapsed_s": 2.16,
+      "rss_mb": 289.40625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043513.68,
+      "elapsed_s": 2.45,
+      "rss_mb": 322.078125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043513.97,
+      "elapsed_s": 2.74,
+      "rss_mb": 1140.03125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043514.26,
+      "elapsed_s": 3.03,
+      "rss_mb": 2004.40625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043514.55,
+      "elapsed_s": 3.39,
+      "rss_mb": 2618.828125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043514.91,
+      "elapsed_s": 3.73,
+      "rss_mb": 2774.34375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043515.24,
+      "elapsed_s": 4.02,
+      "rss_mb": 2724.40625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 65.0
+    },
+    {
+      "timestamp": 1789043515.54,
+      "elapsed_s": 4.32,
+      "rss_mb": 2725.0,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043515.83,
+      "elapsed_s": 4.6,
+      "rss_mb": 2725.046875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043516.12,
+      "elapsed_s": 4.89,
+      "rss_mb": 2725.46875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043516.41,
+      "elapsed_s": 5.18,
+      "rss_mb": 2725.484375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043516.7,
+      "elapsed_s": 5.47,
+      "rss_mb": 2725.84375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 62.0
+    },
+    {
+      "timestamp": 1789043516.99,
+      "elapsed_s": 5.76,
+      "rss_mb": 2725.859375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043517.29,
+      "elapsed_s": 6.05,
+      "rss_mb": 2726.171875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043517.57,
+      "elapsed_s": 6.34,
+      "rss_mb": 2726.171875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043517.86,
+      "elapsed_s": 6.64,
+      "rss_mb": 2726.375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043518.16,
+      "elapsed_s": 6.93,
+      "rss_mb": 2726.65625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043518.45,
+      "elapsed_s": 7.23,
+      "rss_mb": 2726.78125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 62.0
+    },
+    {
+      "timestamp": 1789043518.74,
+      "elapsed_s": 7.52,
+      "rss_mb": 2726.796875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 62.0
+    },
+    {
+      "timestamp": 1789043519.04,
+      "elapsed_s": 7.81,
+      "rss_mb": 2726.9375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043519.33,
+      "elapsed_s": 8.1,
+      "rss_mb": 2726.9375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 62.0
+    },
+    {
+      "timestamp": 1789043519.61,
+      "elapsed_s": 8.39,
+      "rss_mb": 2726.9375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 62.0
+    }
+  ],
+  "captured_logs": "[mlx-server] Inference server: http://127.0.0.1:8797 | Control server: http://127.0.0.1:8798\n[mlx-server] Single-stage server (no embedding loaded) | InstanceToken: stage-103470fa9b24\n[mlx-server] Rerank: /Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit\n[mlx-rerank] Loaded '/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit' \u2713 (yes=9693, no=2152, 2159.4MB Metal) in 1.30s\n[mlx-rerank] Running GPU warmup...\n[mlx-rerank] Warmup complete \u2713\n[mlx-server] Rerank adapter ready: /Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit\n[mlx-server] Server ready (primary='/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit') on http://127.0.0.1:8797 (control: http://127.0.0.1:8798)\n",
+  "child_cleanup": {
+    "cleaned": true,
+    "pid": 16154,
+    "exit_code": 0,
+    "sigkill_used": false
+  },
+  "preflight": {
+    "timestamp": 1789043511.266421,
+    "host": "127.0.0.1",
+    "port": 8797,
+    "control_port": 8798,
+    "stage": "rerank",
+    "model": "~/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
+    "installed_ram_mb": 32768.0,
+    "headroom_mb": 14909.4,
+    "swap_used_mb": 0.0,
+    "free_memory_pct": 73.0,
+    "watchdog_defaults": {
+      "installed_ram_mb": 32768.0,
+      "headroom_mb": 14909.359375,
+      "max_rss_mb": 8192.0,
+      "max_swap_growth_mb": 2048.0,
+      "min_free_memory_pct": 12.0,
+      "health_timeout_s": 3.0,
+      "consecutive_health_failures": 3,
+      "check_interval_s": 1.0,
+      "grace_period_s": 3.0,
+      "startup_grace_period_s": 30.0,
+      "stalled_inference_timeout_s": 60.0
+    }
+  },
+  "child_pid": 16154,
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "model": "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
+    "revision": "",
+    "quantization": "4bit-affine",
+    "dtype": "bfloat16",
+    "maxTokens": 2048,
+    "yesTokenId": 9693,
+    "noTokenId": 2152
+  },
+  "duration_s": 9.502
+}

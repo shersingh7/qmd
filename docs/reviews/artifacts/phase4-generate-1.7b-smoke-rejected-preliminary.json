@@ -1,0 +1,50 @@
+{
+  "instance_token": "gen-smoke-f47a4f37696d",
+  "model": "mlx-community/Qwen3-1.7B-4bit",
+  "port": 8797,
+  "control_port": 8798,
+  "timeout_s": 60.0,
+  "status": "passed",
+  "checks": {
+    "server_ready": true,
+    "descriptor_valid": true,
+    "generation_valid_and_deterministic": true,
+    "invalid_input_rejection": true
+  },
+  "metrics": {
+    "preflight_headroom_mb": 14882.9,
+    "startup_time_s": 3.487,
+    "completions": [
+      {
+        "prompt": "/no_think Expand this search query with ...",
+        "completion": "Sure! Here are three alternative technical keywords that can be expanded with th"
+      },
+      {
+        "prompt": "/no_think Expand this search query: web ...",
+        "completion": "To expand the search query **\"web application REST API authentication\"**, you ca"
+      }
+    ],
+    "generate_p50_ms": 382.49,
+    "memory": {
+      "active_mb": 923.2,
+      "peak_mb": 923.2,
+      "model_mb": 923.2
+    },
+    "stats": {
+      "total_requests": 5,
+      "total_tokens_generated": 132,
+      "avg_ms": 381.72
+    }
+  },
+  "errors": [],
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "kind": "generate",
+    "model": "mlx-community/Qwen3-1.7B-4bit",
+    "revision": "",
+    "maxContext": 4096,
+    "maxNewTokens": 600
+  },
+  "total_duration_s": 5.019
+}

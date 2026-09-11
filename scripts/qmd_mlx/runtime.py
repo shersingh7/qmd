@@ -31,6 +31,7 @@ from .protocol import (
     RequestCancelledError,
     UnsupportedModelError,
     WorkerUnavailableError,
+    WorkClass,
 )
 
 try:
@@ -77,9 +78,6 @@ class MLXEmbeddingRuntime:
         model_manager: Optional[ModelResidencyManager] = None,
         lazy_load: bool = False,
     ):
-        if not _MLX_AVAILABLE:
-            raise MLXRuntimeError("MLX is not installed. Please install mlx and mlx-lm.")
-
         self.model_name = model_name
         self.quantization = quantization
         self.dtype_str = dtype_str
@@ -102,6 +100,9 @@ class MLXEmbeddingRuntime:
             revision=revision,
             trust_remote_code=trust_remote_code,
         )
+
+        if not getattr(self.adapter, "synthetic", False) and not _MLX_AVAILABLE:
+            raise MLXRuntimeError("MLX is not installed. Please install mlx and mlx-lm.")
 
         self.model_manager.register_adapter("embed", self.adapter)
 
@@ -388,10 +389,15 @@ class MLXEmbeddingRuntime:
                 raise DeadlineExceededError("Request deadline exceeded after tokenization")
 
             # Interactive queries get priority 0, bulk document embeddings get priority 1
-            priority = 0 if is_query or len(texts) <= 2 else 1
+            work_class = WorkClass.INTERACTIVE if (is_query or len(texts) <= 2) else WorkClass.BULK
+            priority = 0 if work_class == WorkClass.INTERACTIVE else 1
 
-            # 4. Plan micro-batches for fair interleaving
-            sub_batches, micro_batches_indices = self.batch_planner.plan_micro_batches(tokenized_batch)
+            # 4. Plan micro-batches for fair interleaving at micro-batch boundaries
+            sub_batches, micro_batches_indices = self.batch_planner.plan_micro_batches(
+                tokenized_batch,
+                is_query=is_query,
+                work_class=work_class,
+            )
 
             results: list[np.ndarray] = []
             for batch_idx, sub_batch in enumerate(sub_batches):

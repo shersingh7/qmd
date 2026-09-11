@@ -2,9 +2,16 @@
 protocol.py — Framing, binary serialization, typed errors, and request/response validation
 """
 
+from enum import Enum
 import struct
 import numpy as np
 from typing import Any, Optional
+
+
+class WorkClass(str, Enum):
+    """Workload classification for priority scheduling and microbatch sizing."""
+    INTERACTIVE = "interactive"
+    BULK = "bulk"
 
 
 class MLXRuntimeError(Exception):

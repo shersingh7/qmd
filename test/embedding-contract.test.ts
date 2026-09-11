@@ -105,6 +105,19 @@ describe("Embedding Contract Space ID & Fingerprinting", () => {
     expect(areDescriptorsCompatible(uppercaseModel, lowercaseModel)).toBe(false);
   });
 
+  test("produces different space ID when compute dtype changes", () => {
+    const float32Descriptor: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      dtype: "float32",
+    };
+    const bfloat16Descriptor: EmbeddingDescriptor = {
+      ...baseDescriptor,
+      dtype: "bfloat16",
+    };
+    expect(computeEmbeddingSpaceId(float32Descriptor)).not.toBe(computeEmbeddingSpaceId(bfloat16Descriptor));
+    expect(areDescriptorsCompatible(float32Descriptor, bfloat16Descriptor)).toBe(false);
+  });
+
   test("assertEmbeddingCompatibility throws descriptive error on mismatch", () => {
     const other: EmbeddingDescriptor = {
       ...baseDescriptor,

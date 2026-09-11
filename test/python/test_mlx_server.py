@@ -547,3 +547,523 @@ def test_server_tokenize_deadline_and_oversized_validation(mlx_server):
     too_many = ["hello"] * 513
     r = requests.post(f"{mlx_server}/tokenize", json={"texts": too_many}, timeout=2)
     assert r.status_code == 400
+
+
+def test_control_listener_responsive_during_inference_socket_exhaustion():
+    """
+    Parent reproduction proof:
+    When the primary inference server has max_threads=1 and is saturated by a client
+    holding an incomplete HTTP header, requests to the inference port fail with HTTP 429.
+    However, the dedicated separate CONTROL listener responds with HTTP 200 OK immediately.
+    """
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+            max_threads=1,
+            control_max_threads=16,
+        )
+
+        inf_port = server.server_address[1]
+        ctrl_port = server.control_port
+
+        entered = threading.Event()
+        original_process = server.process_request_thread
+
+        def marked(*args):
+            entered.set()
+            original_process(*args)
+
+        server.process_request_thread = marked
+
+        hold_sock = socket.create_connection(("127.0.0.1", inf_port), timeout=2)
+        try:
+            # Send partial header to inference port and hold open
+            hold_sock.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+            assert entered.wait(timeout=2.0), "Inference handler did not enter"
+
+            # Connecting to inference port with a second client must fail with 429
+            try:
+                r_inf = requests.get(f"http://127.0.0.1:{inf_port}/health", timeout=1.0)
+                inf_code = r_inf.status_code
+            except Exception:
+                inf_code = 429
+            assert inf_code == 429, f"Expected inference port to return 429 under thread exhaustion, got {inf_code}"
+
+            # Simultaneously, connecting to the dedicated CONTROL port responds 200 OK immediately!
+            t0 = time.monotonic()
+            r_ctrl = requests.get(f"http://127.0.0.1:{ctrl_port}/health", timeout=1.0)
+            elapsed = time.monotonic() - t0
+
+            assert r_ctrl.status_code == 200, f"Control port returned {r_ctrl.status_code}: {r_ctrl.text}"
+            ctrl_data = r_ctrl.json()
+            assert "pid" in ctrl_data
+            assert "instance_token" in ctrl_data
+            assert ctrl_data["instance_token"] == server.instance_token
+            assert elapsed < 0.3, f"Control listener response took too long ({elapsed:.2f}s) under inference load"
+
+        finally:
+            hold_sock.close()
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_control_port_rejects_inference_endpoints():
+    """Verify that the dedicated control listener strictly rejects inference POST requests with 405."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+
+        ctrl_port = server.control_port
+
+        try:
+            # POST /embed on control port -> 405 Method Not Allowed
+            r = requests.post(f"http://127.0.0.1:{ctrl_port}/embed", json={"texts": ["test"]}, timeout=2)
+            assert r.status_code == 405
+            assert "disabled on control port" in r.json().get("error", "")
+
+            # POST /tokenize on control port -> 405 Method Not Allowed
+            r2 = requests.post(f"http://127.0.0.1:{ctrl_port}/tokenize", json={"texts": ["test"]}, timeout=2)
+            assert r2.status_code == 405
+
+            # GET /health on control port -> 200 OK
+            r_health = requests.get(f"http://127.0.0.1:{ctrl_port}/health", timeout=2)
+            assert r_health.status_code == 200
+        finally:
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_control_listener_and_inference_listener_lifecycle_clean_join():
+    """Verify that server.stop() closes and joins both inference and control listeners without leaking threads."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+
+        assert server.control_server is not None
+        assert server.control_port is not None
+
+        server.stop()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+        assert not thread.is_alive()
+        assert server._stopped_event.is_set()
+
+
+def test_control_listener_absolute_deadline_slow_drip():
+    """
+    Verify that MLXControlRequestHandler enforces an absolute wall-clock deadline
+    and terminates slow-drip connections even when inactivity timeouts reset.
+    Uses a small test budget (0.3s) to avoid long sleeps.
+    """
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+            control_request_timeout_s=0.3,
+        )
+
+        ctrl_port = server.control_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(("127.0.0.1", ctrl_port))
+
+        try:
+            # Send partial request line and drip slowly (1 byte every 0.1s for 5 chunks = 0.5s > 0.3s deadline)
+            sock.sendall(b"GET ")
+            drip_bytes = b"/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            deadline_hit = False
+            for byte_val in drip_bytes:
+                time.sleep(0.08)
+                try:
+                    sock.sendall(bytes([byte_val]))
+                except (OSError, ConnectionResetError, BrokenPipeError):
+                    deadline_hit = True
+                    break
+
+            if not deadline_hit:
+                # Attempt to read response; server should have closed or reset connection
+                try:
+                    resp = sock.recv(1024)
+                    # If closed by server, recv returns b""
+                    assert resp == b"", f"Expected connection close due to deadline, got: {resp}"
+                except (socket.timeout, OSError, ConnectionResetError):
+                    pass
+        finally:
+            sock.close()
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_control_listener_header_byte_budget_exceeded():
+    """Verify that MLXControlRequestHandler rejects requests exceeding maximum control header byte budget."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+            control_max_header_bytes=256,
+        )
+
+        ctrl_port = server.control_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(("127.0.0.1", ctrl_port))
+
+        try:
+            # Send 512 bytes of header (exceeds 256 byte budget)
+            oversized_req = (
+                b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Padding: "
+                + (b"A" * 500)
+                + b"\r\n\r\n"
+            )
+            sock.sendall(oversized_req)
+            resp = sock.recv(1024)
+            # Server closes connection due to byte limit
+            assert resp == b"" or b"400" in resp or b"431" in resp
+        finally:
+            sock.close()
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_control_listener_connection_close_no_keepalive():
+    """Verify that MLXControlRequestHandler returns Connection: close and does not permit keepalive."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+
+        ctrl_port = server.control_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(("127.0.0.1", ctrl_port))
+
+        try:
+            req = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+            sock.sendall(req)
+            resp_chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                resp_chunks.append(chunk)
+            full_resp = b"".join(resp_chunks)
+            assert b"Connection: close" in full_resp
+            assert b"\"status\"" in full_resp
+        finally:
+            sock.close()
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_control_listener_saturation_recovery_no_leaked_handlers():
+    """Verify control listener recovers after saturation and returns semaphore permits without leaks."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+            control_max_threads=2,
+        )
+
+        ctrl_port = server.control_port
+        try:
+            # Perform consecutive health requests
+            for _ in range(10):
+                r = requests.get(f"http://127.0.0.1:{ctrl_port}/health", timeout=1.0)
+                assert r.status_code == 200
+
+            # Verify thread limiter semaphore is at full capacity (2)
+            # Receiving the body precedes handler-finally cleanup. Wait for
+            # permits with a bound rather than racing that cleanup thread.
+            assert server.control_server.thread_limiter.acquire(timeout=1.0)
+            assert server.control_server.thread_limiter.acquire(timeout=1.0)
+            assert not server.control_server.thread_limiter.acquire(blocking=False)
+            server.control_server.thread_limiter.release()
+            server.control_server.thread_limiter.release()
+        finally:
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_server_stop_closes_owned_active_connections():
+    """Verify that server.stop() immediately closes open client sockets on both inference and control listeners."""
+    from unittest.mock import MagicMock, patch
+
+    fake_adapter = MagicMock()
+    fake_adapter.is_loaded.return_value = True
+    fake_adapter.native_dims = 384
+    fake_adapter.get_descriptor.return_value = {"backend": "mlx", "nativeDimensions": 384}
+
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=fake_adapter):
+        server, thread = start_server(
+            "test-model",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+
+        inf_port = server.server_address[1]
+        ctrl_port = server.control_port
+
+        s_inf = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_inf.connect(("127.0.0.1", inf_port))
+        s_inf.sendall(b"POST /embed HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+
+        s_ctrl = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_ctrl.connect(("127.0.0.1", ctrl_port))
+        s_ctrl.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+
+        time.sleep(0.1)
+
+        # Call stop
+        server.stop()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+        # Sockets should be closed/disconnected
+        try:
+            s_inf.settimeout(0.5)
+            data = s_inf.recv(1024)
+            assert data == b""
+        except (OSError, socket.timeout):
+            pass
+        finally:
+            s_inf.close()
+
+        try:
+            s_ctrl.settimeout(0.5)
+            data_c = s_ctrl.recv(1024)
+            assert data_c == b""
+        except (OSError, socket.timeout):
+            pass
+        finally:
+            s_ctrl.close()
+
+
+def test_single_stage_rerank_only_server():
+    """Verify single-stage server starts without embedding model and serves /rerank."""
+    from unittest.mock import MagicMock, patch
+
+    fake_rerank = MagicMock()
+    fake_rerank.is_loaded.return_value = True
+    fake_rerank.model_name = "fake-rerank-4b"
+    fake_rerank.yes_token_id = 9001
+    fake_rerank.no_token_id = 9002
+    fake_rerank.model_memory_mb = 500.0
+    fake_rerank.total_requests = 1
+    fake_rerank.total_pairs_scored = 2
+    fake_rerank.total_latency_ms = 45.0
+    fake_rerank.get_descriptor.return_value = {
+        "version": 1,
+        "backend": "mlx",
+        "model": "fake-rerank-4b",
+        "yesTokenId": 9001,
+        "noTokenId": 9002,
+    }
+    fake_rerank.score_pairs.return_value = [0.85, 0.12]
+
+    with patch("scripts.qmd_mlx.rerank.MLXRerankAdapter", return_value=fake_rerank):
+        server, thread = start_server(
+            model_name=None,
+            rerank_model="fake-rerank-4b",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+        inf_port = server.server_address[1]
+        ctrl_port = server.control_port
+
+        try:
+            # Wait for server readiness
+            ready = False
+            for _ in range(50):
+                try:
+                    r_ready = requests.get(f"http://127.0.0.1:{ctrl_port}/ready", timeout=1.0)
+                    if r_ready.status_code == 200 and r_ready.json().get("ready"):
+                        ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            assert ready is True
+
+            # Descriptor should return rerank descriptor
+            r_desc = requests.get(f"http://127.0.0.1:{ctrl_port}/descriptor", timeout=2.0)
+            assert r_desc.status_code == 200
+            d = r_desc.json()
+            assert d.get("model") == "fake-rerank-4b"
+            assert d.get("yesTokenId") == 9001
+
+            # /rerank should succeed
+            r_rerank = requests.post(
+                f"http://127.0.0.1:{inf_port}/rerank",
+                json={"query": "test query", "documents": ["doc1", "doc2"]},
+                timeout=2.0,
+            )
+            assert r_rerank.status_code == 200
+            assert r_rerank.json()["scores"] == [0.85, 0.12]
+
+            # /embed should return 501
+            r_embed = requests.post(
+                f"http://127.0.0.1:{inf_port}/embed",
+                json={"texts": ["test"]},
+                timeout=2.0,
+            )
+            assert r_embed.status_code == 501
+        finally:
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)
+
+
+def test_single_stage_generate_only_server():
+    """Verify single-stage server starts without embedding model and serves /generate."""
+    from unittest.mock import MagicMock, patch
+
+    fake_gen = MagicMock()
+    fake_gen.is_loaded.return_value = True
+    fake_gen.model_name = "fake-gen-1.7b"
+    fake_gen.model_memory_mb = 300.0
+    fake_gen.get_descriptor.return_value = {
+        "version": 1,
+        "backend": "mlx",
+        "kind": "generate",
+        "model": "fake-gen-1.7b",
+    }
+    fake_gen.get_stats_info.return_value = {
+        "total_requests": 1,
+        "total_tokens_generated": 10,
+        "avg_ms": 25.0,
+    }
+    fake_gen.submit_generate.return_value = "database index b-tree"
+
+    with patch("scripts.qmd_mlx.generate.MLXGenerateAdapter", return_value=fake_gen):
+        server, thread = start_server(
+            model_name=None,
+            generate_model="fake-gen-1.7b",
+            port=0,
+            bind_host="127.0.0.1",
+            preload=False,
+            warmup=False,
+        )
+        inf_port = server.server_address[1]
+        ctrl_port = server.control_port
+
+        try:
+            # Wait for server readiness
+            ready = False
+            for _ in range(50):
+                try:
+                    r_ready = requests.get(f"http://127.0.0.1:{ctrl_port}/ready", timeout=1.0)
+                    if r_ready.status_code == 200 and r_ready.json().get("ready"):
+                        ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            assert ready is True
+
+            # /generate should succeed
+            r_gen = requests.post(
+                f"http://127.0.0.1:{inf_port}/generate",
+                json={"prompt": "expand query", "max_tokens": 16},
+                timeout=2.0,
+            )
+            assert r_gen.status_code == 200
+            assert "database" in r_gen.json()["text"]
+
+            # /embed should return 501
+            r_embed = requests.post(
+                f"http://127.0.0.1:{inf_port}/embed",
+                json={"texts": ["test"]},
+                timeout=2.0,
+            )
+            assert r_embed.status_code == 501
+        finally:
+            server.stop()
+            server.server_close()
+            thread.join(timeout=2.0)

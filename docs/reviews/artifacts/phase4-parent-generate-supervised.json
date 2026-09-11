@@ -1,0 +1,363 @@
+{
+  "instance_token": "stage-e41167651d07",
+  "stage": "generate",
+  "model": "mlx-community/Qwen3-1.7B-4bit",
+  "port": 8797,
+  "control_port": 8798,
+  "timeout_s": 60.0,
+  "status": "passed",
+  "start_time": 1789043528.644153,
+  "checks": {
+    "server_ready": true,
+    "descriptor_valid": true,
+    "functional_generation": true,
+    "usable_expansion": true,
+    "invalid_input_rejection": true
+  },
+  "metrics": {
+    "preflight_headroom_mb": 15195.2,
+    "startup_time_s": 3.422,
+    "completions": [
+      {
+        "query": "distributed database indexing",
+        "prompt": "/no_think Expand this search query: distributed database indexing",
+        "full_completion": "To expand the search query **\"distributed database indexing\"**, you can consider adding relevant keywords and context to narrow down the search or to get more specific results. Here are some ways to expand or refine the query depending on your intent:\n\n---\n\n### 1. **General Expansion**\n- **\"Distributed Database Indexing: Concepts, Techniques, and Applications\"**\n- **\"Indexing in Distributed Databases: A Survey\"**\n- **\"Distributed Database Indexing: Challenges and Solutions\"**\n\n---\n\n### 2. **By Technology or Framework**\n- **\"Distributed Database Indexing in Hadoop\"",
+        "character_count": 570,
+        "parsed_structure": {
+          "lex": [],
+          "vec": [],
+          "hyde": [],
+          "invalid": [
+            "To expand the search query **\"distributed database indexing\"**, you can consider adding relevant keywords and context to narrow down the search or to get more specific results. Here are some ways to expand or refine the query depending on your intent:",
+            "---",
+            "### 1. **General Expansion**",
+            "---",
+            "### 2. **By Technology or Framework**"
+          ],
+          "keywords": [
+            "**\"Distributed Database Indexing: Concepts, Techniques, and Applications\"**",
+            "**\"Indexing in Distributed Databases: A Survey\"**",
+            "**\"Distributed Database Indexing: Challenges and Solutions\"**",
+            "**\"Distributed Database Indexing in Hadoop\""
+          ]
+        },
+        "usable_expansion": true,
+        "quality_message": "Valid usable query expansion",
+        "deterministic": true,
+        "latency_ms": 1082.93
+      },
+      {
+        "query": "web application REST API authentication",
+        "prompt": "/no_think Expand this search query: web application REST API authentication",
+        "full_completion": "To expand the search query **\"web application REST API authentication\"**, you can consider breaking it down into more specific components and adding relevant keywords to make the search more precise. Here's a refined and expanded version of the query, along with some suggestions for further expansion:\n\n---\n\n### Expanded Search Query:\n**\"Web application REST API authentication best practices, security, OAuth2, JWT, API key, authentication mechanisms, RESTful API authentication, secure REST API authentication, OAuth2 and REST API, REST API authentication methods, REST API authentication protocols, REST API authentication framework, REST API authentication process, REST API authentication tools,",
+        "character_count": 701,
+        "parsed_structure": {
+          "lex": [],
+          "vec": [],
+          "hyde": [],
+          "invalid": [
+            "To expand the search query **\"web application REST API authentication\"**, you can consider breaking it down into more specific components and adding relevant keywords to make the search more precise. Here's a refined and expanded version of the query, along with some suggestions for further expansion:",
+            "---",
+            "### Expanded Search Query:",
+            "**\"Web application REST API authentication best practices, security, OAuth2, JWT, API key, authentication mechanisms, RESTful API authentication, secure REST API authentication, OAuth2 and REST API, REST API authentication methods, REST API authentication protocols, REST API authentication framework, REST API authentication process, REST API authentication tools,"
+          ],
+          "keywords": []
+        },
+        "usable_expansion": true,
+        "quality_message": "Valid usable query expansion",
+        "deterministic": true,
+        "latency_ms": 1070.76
+      }
+    ],
+    "generate_p50_ms": 1082.93,
+    "memory": {
+      "active_mb": 923.2,
+      "peak_mb": 923.2,
+      "model_mb": 923.2
+    },
+    "stats": {
+      "total_requests": 5,
+      "total_tokens_generated": 516,
+      "avg_ms": 904.21
+    }
+  },
+  "fixtures": {},
+  "errors": [],
+  "telemetry_samples": [
+    {
+      "timestamp": 1789043528.68,
+      "elapsed_s": 0.05,
+      "rss_mb": null,
+      "swap_used_mb": null,
+      "swap_growth_mb": null,
+      "memory_free_pct": null
+    },
+    {
+      "timestamp": 1789043528.94,
+      "elapsed_s": 0.32,
+      "rss_mb": 69.859375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043529.22,
+      "elapsed_s": 0.59,
+      "rss_mb": 83.296875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043529.49,
+      "elapsed_s": 0.86,
+      "rss_mb": 86.203125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043529.76,
+      "elapsed_s": 1.13,
+      "rss_mb": 86.40625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043530.02,
+      "elapsed_s": 1.4,
+      "rss_mb": 206.015625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043530.3,
+      "elapsed_s": 1.67,
+      "rss_mb": 235.109375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 74.0
+    },
+    {
+      "timestamp": 1789043530.57,
+      "elapsed_s": 1.94,
+      "rss_mb": 274.09375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 74.0
+    },
+    {
+      "timestamp": 1789043530.84,
+      "elapsed_s": 2.25,
+      "rss_mb": 305.296875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043531.15,
+      "elapsed_s": 2.52,
+      "rss_mb": 624.890625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 74.0
+    },
+    {
+      "timestamp": 1789043531.42,
+      "elapsed_s": 2.82,
+      "rss_mb": 1334.890625,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 74.0
+    },
+    {
+      "timestamp": 1789043531.71,
+      "elapsed_s": 3.12,
+      "rss_mb": 1485.078125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 73.0
+    },
+    {
+      "timestamp": 1789043532.01,
+      "elapsed_s": 3.38,
+      "rss_mb": 1459.4375,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 65.0
+    },
+    {
+      "timestamp": 1789043532.28,
+      "elapsed_s": 3.65,
+      "rss_mb": 1464.546875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 65.0
+    },
+    {
+      "timestamp": 1789043532.55,
+      "elapsed_s": 3.93,
+      "rss_mb": 1464.546875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 63.0
+    },
+    {
+      "timestamp": 1789043532.82,
+      "elapsed_s": 4.2,
+      "rss_mb": 1464.546875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043533.1,
+      "elapsed_s": 4.47,
+      "rss_mb": 1464.578125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043533.37,
+      "elapsed_s": 4.74,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043533.64,
+      "elapsed_s": 5.02,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043533.92,
+      "elapsed_s": 5.29,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043534.19,
+      "elapsed_s": 5.56,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043534.46,
+      "elapsed_s": 5.84,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043534.73,
+      "elapsed_s": 6.11,
+      "rss_mb": 1465.953125,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043535.0,
+      "elapsed_s": 6.38,
+      "rss_mb": 1465.96875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043535.28,
+      "elapsed_s": 6.65,
+      "rss_mb": 1465.96875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043535.55,
+      "elapsed_s": 6.93,
+      "rss_mb": 1465.875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043535.82,
+      "elapsed_s": 7.2,
+      "rss_mb": 1465.875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043536.1,
+      "elapsed_s": 7.47,
+      "rss_mb": 1465.875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    },
+    {
+      "timestamp": 1789043536.37,
+      "elapsed_s": 7.74,
+      "rss_mb": 1465.875,
+      "swap_used_mb": 0.0,
+      "swap_growth_mb": 0.0,
+      "memory_free_pct": 64.0
+    }
+  ],
+  "captured_logs": "[mlx-server] Inference server: http://127.0.0.1:8797 | Control server: http://127.0.0.1:8798\n[mlx-server] Single-stage server (no embedding loaded) | InstanceToken: stage-e41167651d07\n[mlx-server] Generate: mlx-community/Qwen3-1.7B-4bit\n[mlx-generate] Loaded 'mlx-community/Qwen3-1.7B-4bit' \u2713 (923.2MB Metal) in 0.73s\n[mlx-generate] Warmup complete \u2713\n[mlx-server] Generate adapter ready: mlx-community/Qwen3-1.7B-4bit\n[mlx-server] Server ready (primary='mlx-community/Qwen3-1.7B-4bit') on http://127.0.0.1:8797 (control: http://127.0.0.1:8798)\n",
+  "child_cleanup": {
+    "cleaned": true,
+    "pid": 16347,
+    "exit_code": 0,
+    "sigkill_used": false
+  },
+  "preflight": {
+    "timestamp": 1789043528.644172,
+    "host": "127.0.0.1",
+    "port": 8797,
+    "control_port": 8798,
+    "stage": "generate",
+    "model": "mlx-community/Qwen3-1.7B-4bit",
+    "installed_ram_mb": 32768.0,
+    "headroom_mb": 15195.2,
+    "swap_used_mb": 0.0,
+    "free_memory_pct": 73.0,
+    "watchdog_defaults": {
+      "installed_ram_mb": 32768.0,
+      "headroom_mb": 15195.203125,
+      "max_rss_mb": 8192.0,
+      "max_swap_growth_mb": 2048.0,
+      "min_free_memory_pct": 12.0,
+      "health_timeout_s": 3.0,
+      "consecutive_health_failures": 3,
+      "check_interval_s": 1.0,
+      "grace_period_s": 3.0,
+      "startup_grace_period_s": 30.0,
+      "stalled_inference_timeout_s": 60.0
+    }
+  },
+  "child_pid": 16347,
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "kind": "generate",
+    "model": "mlx-community/Qwen3-1.7B-4bit",
+    "revision": "",
+    "maxContext": 4096,
+    "maxNewTokens": 600
+  },
+  "duration_s": 8.4
+}

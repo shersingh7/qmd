@@ -48,6 +48,7 @@ export function computeEmbeddingSpaceId(descriptor: EmbeddingDescriptor): string
     nd: descriptor.nativeDimensions,
     od: descriptor.outputDimensions,
     n: descriptor.normalized,
+    dt: descriptor.dtype?.trim() || "",
     q: descriptor.quantization?.trim() || "",
   };
 

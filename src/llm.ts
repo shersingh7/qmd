@@ -1314,17 +1314,17 @@ export class LlamaCpp implements LLM {
   }
 
   /**
-   * MLX query-expansion fast-path. Returns null to signal GGUF fallback.
+   * MLX query-expansion fast-path. Returns Queryable[] on success, null to signal GGUF fallback
+   * when fallback is enabled, or throws if fallback is disabled.
    */
   private async _expandQueryMlx(query: string, includeLexical: boolean, intent?: string): Promise<Queryable[] | null> {
     try {
       await this._ensureMlxClient();
       const { generateWithMlx } = await import('./mlx.js');
-      const prompt = intent
-        ? `/no_think Expand this search query: ${query}\nQuery intent: ${intent}`
-        : `/no_think Expand this search query: ${query}`;
+      const { buildMlxExpansionPrompt, parseExpansionOutput } = await import('./expansion/protocol.js');
+      const prompt = buildMlxExpansionPrompt(query, { intent });
       const text = await generateWithMlx(prompt, this.mlxUrlOverride ? { url: this.mlxUrlOverride } : undefined, {
-        maxTokens: 600,
+        maxTokens: 256,
         temperature: 0.7,
       });
       if (!text) {
@@ -1332,29 +1332,16 @@ export class LlamaCpp implements LLM {
         throw new Error("MLX query expansion failed and GGUF fallback is disabled (QMD_MLX_EXPAND_FALLBACK=0)");
       }
 
-      // Same parsing contract as the GGUF path.
-      const lines = text.trim().split("\n");
-      const queryLower = query.toLowerCase();
-      const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
-      const hasQueryTerm = (t: string): boolean => {
-        const lower = t.toLowerCase();
-        if (queryTerms.length === 0) return true;
-        return queryTerms.some((term) => lower.includes(term));
-      };
-      const queryables: Queryable[] = lines
-        .map((line) => {
-          const colonIdx = line.indexOf(":");
-          if (colonIdx === -1) return null;
-          const type = line.slice(0, colonIdx).trim();
-          if (type !== 'lex' && type !== 'vec' && type !== 'hyde') return null;
-          const t = line.slice(colonIdx + 1).trim();
-          if (!hasQueryTerm(t)) return null;
-          return { type: type as QueryType, text: t };
-        })
-        .filter((q): q is Queryable => q !== null);
-      const filtered = includeLexical ? queryables : queryables.filter((q) => q.type !== 'lex');
-      if (filtered.length > 0) return filtered;
-      return null; // let the GGUF path produce its structured fallback
+      const parsed = parseExpansionOutput(text, { query, includeLexical });
+      if (parsed.usable && parsed.queryables.length > 0) {
+        return parsed.queryables;
+      }
+
+      if (this.mlxExpandFallback) {
+        console.warn(`MLX expansion produced 0 usable typed items (${parsed.qualityMessage}), falling back to GGUF`);
+        return null;
+      }
+      throw new Error(`MLX query expansion produced no valid typed expansions (${parsed.qualityMessage}) and GGUF fallback is disabled (QMD_MLX_EXPAND_FALLBACK=0)`);
     } catch (err) {
       if (this.mlxExpandFallback) {
         console.warn(`MLX expansion error, falling back to GGUF: ${err instanceof Error ? err.message : String(err)}`);

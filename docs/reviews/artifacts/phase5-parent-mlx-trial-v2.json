@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-09-10T21:27:16Z",
+  "status": "failed",
+  "preflight": {
+    "installed_ram_mb": 32768.0,
+    "headroom_mb": 19474.2,
+    "swap_used_mb": 3442.0,
+    "memory_free_pct": 74.0
+  },
+  "checks": {
+    "shadow_target_safety": true,
+    "durable_indexing_cancellation": true,
+    "durable_indexing_resumption": true,
+    "vector_deduplication_reconciled": true,
+    "fingerprint_mismatch_refused": true,
+    "sqlite_online_backup_restored": true,
+    "restored_retrieval_identical": true,
+    "mcp_transport_probe_passed": false,
+    "mlx4b_retrieval_complete": false,
+    "gguf06b_stage_blocked": true
+  },
+  "errors": [
+    "TypeScript Phase 5 runner failed with exit code 1: QMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nError querying [hybrid] for \"concurrent readers non-blocking during database write commits\": Structured search (vec): Negation (-term) is not supported in vec/hyde queries. Use lex for exclusions.\n[Phase 5] Unhandled execution error: 164 |         });\n165 |       }\n166 |     } catch (err: any) {\n167 |       queryError = err?.message || String(err);\n168 |       console.error(`Error querying [${stageName}] for \"${q.query}\":`, queryError);\n169 |       throw new Error(`Query execution failure in [${stageName}] for \"${q.query}\": ${queryError}`);\n                      ^\nerror: Query execution failure in [hybrid] for \"concurrent readers non-blocking during database write commits\": Structured search (vec): Negation (-term) is not supported in vec/hyde queries. Use lex for exclusions.\n      at evaluateRetrievalStage (/Users/shersingh/github/qmd-mlx-search/scripts/phase5_e2e_runner.ts:169:17)\n      at async runPhase5Qualification (/Users/shersingh/github/qmd-mlx-search/scripts/phase5_e2e_runner.ts:554:37)\n\n"
+  ],
+  "retrieval_comparison": {
+    "gguf_06b": {
+      "status": "blocked",
+      "reason": "GGUF stage explicitly BLOCKED pending supervised integration instead of unmanaged subprocess.run"
+    },
+    "mlx_4b": {
+      "status": "failed"
+    }
+  },
+  "unfulfilled_release_gates": [
+    "MLX 4B concurrent interactive latency under bulk load (642.06ms) violates <=200.0ms target; hardware/driver bounds remain unproven.",
+    "1000-batch sustained load memory test unfulfilled for live promotion.",
+    "Full-corpus evaluation (MS MARCO/BEIR) pending; small public fixture results labeled as Preliminary Release Smoke.",
+    "GGUF stage explicitly BLOCKED pending supervised integration.",
+    "Fresh-process crash recovery across OS boundaries marked pending; only in-process checkpoint recovery verified."
+  ],
+  "corpus": {
+    "totalDocs": 16,
+    "totalQueries": 10,
+    "docIds": [
+      "doc-api-versioning",
+      "doc-raft-consensus",
+      "doc-sqlite-wal",
+      "doc-apple-metal-mem",
+      "doc-ann-vector-index",
+      "doc-cache-invalidation",
+      "doc-b-tree-indexing",
+      "doc-jwt-auth",
+      "doc-compiler-jit",
+      "doc-linux-epoll",
+      "doc-tls-handshake",
+      "doc-garbage-collection",
+      "doc-cookie-recipe",
+      "doc-vacation-policy",
+      "doc-startup-fundraising",
+      "doc-phoenix-launch"
+    ]
+  },
+  "recovery": {
+    "mode": "in_process_checkpoint",
+    "freshProcessRecovery": "pending",
+    "initialCancelledChunks": 2,
+    "resumedTotalChunks": 16,
+    "consecutiveSequenceVerified": true,
+    "mismatchErrorCaught": true,
+    "backupVectorCount": 16,
+    "backupDocCount": 16
+  },
+  "mcp_probe": {
+    "port": 0,
+    "toolsCount": 0,
+    "searchResultCount": 0,
+    "firstResultDocId": "",
+    "getContentLength": 0
+  },
+  "memory_metrics": {
+    "active_mb": 2397.8,
+    "peak_mb": 3671.8,
+    "model_mb": 2159.4,
+    "residency_budget_mb": 16384.0,
+    "notes": "Resident weight budgets are not total activation memory guarantees."
+  },
+  "stats_metrics": {
+    "total_requests": 24,
+    "avg_ms": 410.21,
+    "compiled_shapes": 20,
+    "uptime_sec": 14.2,
+    "weights_loaded": true,
+    "idle_unload_s": 300.0
+  },
+  "duration_s": 15.722
+}

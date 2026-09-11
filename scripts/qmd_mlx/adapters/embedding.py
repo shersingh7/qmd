@@ -4,6 +4,8 @@ embedding.py — Explicit Model Adapters for MLX Embedding Models
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import threading
 import time
@@ -239,6 +241,15 @@ class QwenEmbeddingAdapter(BaseEmbeddingAdapter):
                     raise ModelUnavailableError(f"Failed to load Qwen embedding model '{self.model_name}': {exc}")
             except Exception as exc:
                 raise ModelUnavailableError(f"Failed to load Qwen embedding model '{self.model_name}': {exc}")
+
+            # Honor the advertised compute dtype, including quantization scales.
+            # Casting only the pooled output cannot recover precision lost in
+            # BF16 batch-dependent kernels. Packed integer weights stay quantized.
+            compute_dtype = {"float32": mx.float32, "float16": mx.float16,
+                             "bfloat16": mx.bfloat16}.get(self.dtype_str)
+            if compute_dtype is None:
+                raise ModelUnavailableError(f"Unsupported compute dtype: {self.dtype_str}")
+            model.set_dtype(compute_dtype)
 
             self.model = model
             self.tokenizer = tokenizer_wrap
@@ -500,6 +511,167 @@ class BertEmbeddingAdapter(BaseEmbeddingAdapter):
         return result_np
 
 
+class SyntheticTokenizer:
+    """Lightweight deterministic CPU tokenizer for synthetic fixture rehearsals."""
+
+    def __init__(self, max_length: int = 2048):
+        self.max_length = max_length
+        self.pad_token_id = 0
+        self.eos_token_id = 151643
+        self.padding_side = "right"
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        if not text:
+            return []
+        words = text.split()
+        tokens: list[int] = []
+        for w in words:
+            h = int.from_bytes(hashlib.md5(w.encode("utf-8")).digest()[:4], byteorder="big") % 100000 + 1
+            tokens.append(h)
+        if not tokens:
+            tokens = [1]
+        if add_special_tokens:
+            tokens.append(self.eos_token_id)
+        return tokens
+
+    def decode(self, token_ids: list[int]) -> str:
+        words = [f"tok_{t}" for t in token_ids if t != self.eos_token_id and t != self.pad_token_id]
+        return " ".join(words)
+
+
+class SyntheticEmbeddingAdapter(BaseEmbeddingAdapter):
+    """
+    Test-only synthetic embedding adapter for offline qualification and rehearsals.
+    Exercises the full real server, executor, residency manager, and runtime pipeline
+    without loading real weights or requiring MLX.
+    Outputs are explicitly labeled synthetic.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "synthetic-qwen3-4b",
+        quantization: Optional[str] = None,
+        dtype_str: str = "float32",
+        max_length: int = 2048,
+        revision: Optional[str] = None,
+        trust_remote_code: bool = False,
+        dims: int = 2560,
+    ):
+        super().__init__(
+            model_name=model_name,
+            quantization=quantization,
+            dtype_str=dtype_str,
+            max_length=max_length,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+        )
+        self.synthetic = True
+        self.native_dims = dims
+        self.pooling_strategy = "last_token"
+        self.padding_side = "right"
+        self.is_causal = True
+        self.model_type = "synthetic_embedding"
+        self.model_params_b = infer_model_params_b(model_name)
+        if self.model_params_b == 0.6 and ("4b" in model_name.lower() or "4B" in model_name):
+            self.model_params_b = 4.0
+        self.estimated_memory_mb = 128.0
+        self.model_memory_mb = 128.0
+        self._loaded = False
+        self.hang_on_embed = os.environ.get("MLX_HANG_ON_EMBED") == "1" or ("hang" in model_name.lower())
+        self.hang_after_requests = int(os.environ.get("MLX_HANG_AFTER_REQUESTS", "0"))
+        self._request_count = 0
+
+    def is_loaded(self) -> bool:
+        return self._loaded and self.model is not None
+
+    def load(self):
+        with self._init_lock:
+            if self._loaded:
+                return
+            self._loaded = True
+            self.raw_hf_tokenizer = SyntheticTokenizer(max_length=self.max_length)
+            self.tokenizer = self.raw_hf_tokenizer
+            self.model = object()  # non-None sentinel
+
+    def unload(self):
+        with self._init_lock:
+            self._loaded = False
+            self.model = None
+
+    def tokenize_texts(self, texts: list[str]) -> TokenizedBatch:
+        if not self.is_loaded():
+            with self._init_lock:
+                if not self.is_loaded():
+                    self.load()
+        return TokenizerHelper.tokenize_once(texts, self.raw_hf_tokenizer, max_length=self.max_length)
+
+    def forward_batch(
+        self,
+        tokenized_batch: TokenizedBatch,
+        requested_dims: Optional[int] = None,
+    ) -> np.ndarray:
+        if self.hang_on_embed:
+            while True:
+                time.sleep(0.5)
+
+        if self.hang_after_requests > 0 and self._request_count >= self.hang_after_requests:
+            while True:
+                time.sleep(0.5)
+
+        self._request_count += 1
+
+        if len(tokenized_batch) == 0:
+            return np.empty((0, self.native_dims), dtype=np.float32)
+
+        actual_dims = requested_dims if (requested_dims and requested_dims < self.native_dims) else self.native_dims
+        count = len(tokenized_batch)
+        arr = np.empty((count, actual_dims), dtype=np.float32)
+
+        fail_consistency = os.environ.get("MLX_FAKE_FAIL_CONSISTENCY") == "1"
+
+        for i, seq in enumerate(tokenized_batch.token_ids):
+            seed_bytes = hashlib.sha256(bytes(str(seq), "utf-8")).digest()
+            seed = int.from_bytes(seed_bytes[:8], byteorder="big")
+            rng = np.random.default_rng(seed)
+            vec = rng.standard_normal(self.native_dims).astype(np.float32)
+            if actual_dims < self.native_dims:
+                vec = vec[:actual_dims]
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            orig_idx = (
+                tokenized_batch.original_indices[i]
+                if tokenized_batch.original_indices and i < len(tokenized_batch.original_indices)
+                else i
+            )
+            if fail_consistency and count > 1 and orig_idx == 0:
+                # Deliberately perturb original item 0 when embedded in a batch so cosine similarity drops to ~0.999570
+                perturb = np.zeros_like(vec)
+                perturb[0] = 0.0293
+                vec = vec + perturb
+                vec = vec / np.linalg.norm(vec)
+            arr[i] = vec
+
+        return arr
+
+    def get_descriptor(self, requested_dims: Optional[int] = None) -> dict[str, Any]:
+        out_dims = requested_dims if (requested_dims and requested_dims < self.native_dims) else self.native_dims
+        return {
+            "version": 1,
+            "backend": "mlx_synthetic",
+            "model": self.model_name,
+            "revision": "synthetic-rehearsal",
+            "pooling": self.pooling_strategy,
+            "nativeDimensions": self.native_dims,
+            "outputDimensions": out_dims,
+            "maxTokens": self.max_length,
+            "normalized": True,
+            "dtype": self.dtype_str,
+            "quantization": "synthetic-4bit",
+            "synthetic": True,
+        }
+
+
 def resolve_embedding_adapter(
     model_name: str,
     quantization: Optional[str] = None,
@@ -511,7 +683,19 @@ def resolve_embedding_adapter(
     """Resolves and instantiates the correct embedding adapter for a model name."""
     m_lower = model_name.lower()
 
-    if "qwen" in m_lower or "gemma" in m_lower or "embeddinggemma" in m_lower:
+    if "synthetic" in m_lower or "fake" in m_lower or m_lower.startswith("test-"):
+        m_dims = re.search(r'(\d+)d\b', m_lower)
+        dims = int(m_dims.group(1)) if m_dims else (384 if "minilm" in m_lower or "384" in m_lower else 2560)
+        return SyntheticEmbeddingAdapter(
+            model_name=model_name,
+            quantization=quantization,
+            dtype_str=dtype_str,
+            max_length=max_length,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+            dims=dims,
+        )
+    elif "qwen" in m_lower or "gemma" in m_lower or "embeddinggemma" in m_lower:
         return QwenEmbeddingAdapter(
             model_name=model_name,
             quantization=quantization,
@@ -541,5 +725,5 @@ def resolve_embedding_adapter(
     else:
         raise UnsupportedModelError(
             f"Unsupported MLX embedding model: '{model_name}'. "
-            f"Registered adapters: Qwen/Gemma, Nomic-BERT, MiniLM/BERT."
+            f"Registered adapters: Synthetic/Fake, Qwen/Gemma, Nomic-BERT, MiniLM/BERT."
         )

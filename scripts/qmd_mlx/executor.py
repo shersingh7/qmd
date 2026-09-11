@@ -47,6 +47,9 @@ class GPUExecutor:
         self._seq = 0
         self._running = True
         self._current_job: Optional[ExecutionJob] = None
+        self._current_job_start_time: Optional[float] = None
+        self._current_job_description: Optional[str] = None
+        self._total_completed_jobs: int = 0
         self._idle_callbacks: list[Callable[[], None]] = []
         self._consecutive_interactive = 0
 
@@ -81,6 +84,26 @@ class GPUExecutor:
         """Returns current pending queue length under lock."""
         with self._cv:
             return len(self._queue)
+
+    def get_worker_progress(self) -> dict[str, Any]:
+        """Returns a snapshot of live worker execution progress and job duration under lock."""
+        with self._cv:
+            now = time.monotonic()
+            active_job_age_s = (
+                round(now - self._current_job_start_time, 3)
+                if self._current_job_start_time is not None
+                else None
+            )
+            return {
+                "worker_alive": self._worker_thread.is_alive(),
+                "is_accepting": self._running,
+                "is_idle": self._current_job is None and len(self._queue) == 0,
+                "active_job": self._current_job is not None,
+                "active_job_description": self._current_job_description,
+                "active_job_age_s": active_job_age_s,
+                "completed_sequence": self._total_completed_jobs,
+                "queue_depth": len(self._queue),
+            }
 
     def join_worker(self, timeout: float = 5.0):
         """Waits for the background worker thread to join."""
@@ -134,7 +157,10 @@ class GPUExecutor:
         try:
             # Wait for future with remaining timeout
             rem = max(0.01, deadline - time.monotonic())
-            return fut.result(timeout=rem)
+            res = fut.result(timeout=rem)
+            if event.is_set():
+                raise RequestCancelledError(f"Request '{description}' was cancelled")
+            return res
         except TimeoutError:
             event.set()
             raise DeadlineExceededError(
@@ -226,6 +252,8 @@ class GPUExecutor:
                                 self._consecutive_interactive = 0
 
                         self._current_job = job
+                        self._current_job_start_time = time.monotonic()
+                        self._current_job_description = job.description
 
                 # Execute idle callbacks strictly OUTSIDE the condition variable lock
                 if callbacks_to_run:
@@ -242,13 +270,19 @@ class GPUExecutor:
                 if job.cancel_event.is_set():
                     if not job.future.done():
                         job.future.set_exception(RequestCancelledError(f"Job '{job.description}' was cancelled"))
-                    self._current_job = None
+                    with self._cv:
+                        self._current_job = None
+                        self._current_job_start_time = None
+                        self._current_job_description = None
                     continue
 
                 if time.monotonic() > job.deadline:
                     if not job.future.done():
                         job.future.set_exception(DeadlineExceededError(f"Job '{job.description}' expired in queue"))
-                    self._current_job = None
+                    with self._cv:
+                        self._current_job = None
+                        self._current_job_start_time = None
+                        self._current_job_description = None
                     continue
 
                 # Execute job on the GPU owner thread
@@ -260,11 +294,18 @@ class GPUExecutor:
                     if not job.future.done():
                         job.future.set_exception(exc)
                 finally:
-                    self._current_job = None
+                    with self._cv:
+                        self._total_completed_jobs += 1
+                        self._current_job = None
+                        self._current_job_start_time = None
+                        self._current_job_description = None
             except Exception as e:
                 # Top-level guard prevents unhandled bookkeeping errors from silently terminating the worker
                 print(f"[mlx-executor] Worker loop unhandled error: {e}", file=sys.stderr)
-                self._current_job = None
+                with self._cv:
+                    self._current_job = None
+                    self._current_job_start_time = None
+                    self._current_job_description = None
                 time.sleep(0.01)
 
     def shutdown(self, timeout: float = 5.0):

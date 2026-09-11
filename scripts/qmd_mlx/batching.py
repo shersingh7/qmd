@@ -16,6 +16,7 @@ from .protocol import (
     DeadlineExceededError,
     OutOfMemoryError,
     RequestCancelledError,
+    WorkClass,
 )
 
 
@@ -80,6 +81,7 @@ class BatchPlanner:
     def __init__(
         self,
         max_batch_tokens: Optional[int] = None,
+        max_bulk_microbatch_tokens: int = 512,
         model_params_b: float = 0.6,
         system_ram_gb_fn: Optional[Callable[[], float]] = None,
     ):
@@ -87,6 +89,7 @@ class BatchPlanner:
         self._ram_fn = system_ram_gb_fn
         self._oom_halvings: int = 0
         self._tuned_model_params_b: Optional[float] = None
+        self.max_bulk_microbatch_tokens = max_bulk_microbatch_tokens
         self.max_batch_tokens = max_batch_tokens or calculate_default_max_batch_tokens(
             model_params_b=model_params_b,
             system_ram_gb_fn=self._ram_fn,
@@ -123,9 +126,14 @@ class BatchPlanner:
     def plan_micro_batches(
         self,
         tokenized_batch: TokenizedBatch,
+        is_query: bool = False,
+        work_class: Optional[WorkClass] = None,
+        max_tokens_override: Optional[int] = None,
     ) -> tuple[list[TokenizedBatch], list[list[int]]]:
         """
-        Groups tokenized sequences by length into micro-batches bounded by max_batch_tokens.
+        Groups tokenized sequences by length into micro-batches bounded by effective token budget.
+        For WorkClass.BULK (or not is_query), bounds micro-batch size conservatively
+        to keep nonpreemptible Metal GPU execution intervals short and allow interactive interleaving.
         Returns (list of TokenizedBatch sub-batches, list of original index positions).
         """
         total_items = len(tokenized_batch)
@@ -134,6 +142,16 @@ class BatchPlanner:
 
         if total_items == 1:
             return [tokenized_batch], [[0]]
+
+        if max_tokens_override is not None and max_tokens_override > 0:
+            effective_budget = max_tokens_override
+        elif work_class == WorkClass.BULK or (work_class is None and not is_query):
+            effective_budget = min(self.max_batch_tokens, self.max_bulk_microbatch_tokens)
+        else:
+            effective_budget = self.max_batch_tokens
+
+        is_bulk = (work_class == WorkClass.BULK) or (work_class is None and not is_query)
+        max_items_per_batch = 16 if is_bulk else 64
 
         lengths = tokenized_batch.lengths
         sorted_pos = sorted(range(total_items), key=lambda i: lengths[i])
@@ -147,7 +165,7 @@ class BatchPlanner:
             cand_max_len = max(current_max_len, token_len)
             cand_tokens = (len(current_batch) + 1) * cand_max_len
 
-            if current_batch and (cand_tokens > self.max_batch_tokens or len(current_batch) >= 64):
+            if current_batch and (cand_tokens > effective_budget or len(current_batch) >= max_items_per_batch):
                 micro_batches_indices.append(current_batch)
                 current_batch = [pos]
                 current_max_len = token_len
@@ -188,6 +206,8 @@ class BatchPlanner:
         embed_fn: Callable[[TokenizedBatch], np.ndarray],
         deadline: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
+        is_query: bool = False,
+        work_class: Optional[WorkClass] = None,
     ) -> np.ndarray:
         """
         Executes embedding directly from a pre-tokenized TokenizedBatch.
@@ -197,7 +217,11 @@ class BatchPlanner:
         if total_items == 0:
             return np.empty((0, 0), dtype=np.float32)
 
-        sub_batches, micro_batches_indices = self.plan_micro_batches(tokenized_batch)
+        sub_batches, micro_batches_indices = self.plan_micro_batches(
+            tokenized_batch,
+            is_query=is_query,
+            work_class=work_class,
+        )
 
         results: List[np.ndarray] = []
         for batch_idx, sub_batch in enumerate(sub_batches):

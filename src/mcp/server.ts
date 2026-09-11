@@ -562,10 +562,11 @@ export type HttpServerHandle = {
  * Start MCP server over Streamable HTTP (JSON responses, no SSE).
  * Binds to localhost only. Returns a handle for shutdown and port discovery.
  */
-export async function startMcpHttpServer(port: number, options?: { quiet?: boolean }): Promise<HttpServerHandle> {
+export async function startMcpHttpServer(port: number, options?: { quiet?: boolean; store?: QMDStore; dbPath?: string }): Promise<HttpServerHandle> {
   const configPath = getConfigPath();
-  const store = await createStore({
-    dbPath: getDefaultDbPath(),
+  const isOwnedStore = !options?.store;
+  const store = options?.store ?? await createStore({
+    dbPath: options?.dbPath ?? getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
   });
 
@@ -809,7 +810,9 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     }
     sessions.clear();
     httpServer.close();
-    await store.close();
+    if (isOwnedStore) {
+      await store.close();
+    }
   };
 
   process.on("SIGTERM", async () => {

@@ -1,0 +1,1094 @@
+{
+  "timestamp": "2026-09-10T21:28:44Z",
+  "status": "failed",
+  "preflight": {
+    "installed_ram_mb": 32768.0,
+    "headroom_mb": 20142.2,
+    "swap_used_mb": 3765.9,
+    "memory_free_pct": 76.0
+  },
+  "checks": {
+    "shadow_target_safety": true,
+    "durable_indexing_cancellation": true,
+    "durable_indexing_resumption": true,
+    "vector_deduplication_reconciled": true,
+    "fingerprint_mismatch_refused": true,
+    "sqlite_online_backup_restored": true,
+    "restored_retrieval_identical": true,
+    "mcp_transport_probe_passed": false,
+    "mlx4b_retrieval_complete": true,
+    "gguf06b_stage_blocked": true
+  },
+  "errors": [
+    "TypeScript Phase 5 runner failed with exit code 1: QMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\n"
+  ],
+  "retrieval_comparison": {
+    "gguf_06b": {
+      "status": "blocked",
+      "reason": "GGUF stage explicitly BLOCKED pending supervised integration instead of unmanaged subprocess.run"
+    },
+    "mlx_4b": {
+      "bm25": {
+        "recallAt1": 0.1,
+        "recallAt3": 0.1,
+        "recallAt5": 0.1,
+        "mrr": 0.1,
+        "ndcgAt5": 0.1,
+        "avgLatencyMs": 0.16,
+        "p50LatencyMs": 0.14,
+        "p95LatencyMs": 0.29,
+        "queryDetails": [
+          {
+            "queryId": "Q01",
+            "query": "HTTP header versus URI path versioning for web APIs",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-api-versioning"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.29
+          },
+          {
+            "queryId": "Q02",
+            "query": "how do distributed nodes elect a leader after heartbeat timeout",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-raft-consensus"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.17
+          },
+          {
+            "queryId": "Q03",
+            "query": "concurrent readers non-blocking during database write commits",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-sqlite-wal"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.18
+          },
+          {
+            "queryId": "Q04",
+            "query": "eliminating CPU to GPU buffer copy overhead on Apple chips",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-apple-metal-mem"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.14
+          },
+          {
+            "queryId": "Q05",
+            "query": "hierarchical graph index for fast cosine similarity search",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-ann-vector-index"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.11
+          },
+          {
+            "queryId": "Q06",
+            "query": "preventing thundering herd when cached entries expire",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-cache-invalidation"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.1
+          },
+          {
+            "queryId": "Q07",
+            "query": "tradeoffs between write amplification in LSM trees vs B-trees",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-b-tree-indexing"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.13
+          },
+          {
+            "queryId": "Q08",
+            "query": "cryptographic key exchange with forward secrecy and 1-RTT latency",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-tls-handshake"
+            ],
+            "topDocIds": [
+              "doc-tls-handshake"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 0.27
+          },
+          {
+            "queryId": "Q09",
+            "query": "ingredients and oven temperature for homemade chocolate cookies",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-cookie-recipe"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.1
+          },
+          {
+            "queryId": "Q10",
+            "query": "employee paid time off accrual rules and request notice window",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-vacation-policy"
+            ],
+            "topDocIds": [],
+            "rank1": null,
+            "hitAt5": false,
+            "latencyMs": 0.1
+          }
+        ]
+      },
+      "vector": {
+        "recallAt1": 1,
+        "recallAt3": 1,
+        "recallAt5": 1,
+        "mrr": 1,
+        "ndcgAt5": 1,
+        "avgLatencyMs": 86.78,
+        "p50LatencyMs": 86.15,
+        "p95LatencyMs": 90.43,
+        "queryDetails": [
+          {
+            "queryId": "Q01",
+            "query": "HTTP header versus URI path versioning for web APIs",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-api-versioning"
+            ],
+            "topDocIds": [
+              "doc-api-versioning",
+              "doc-ann-vector-index",
+              "doc-jwt-auth",
+              "doc-tls-handshake",
+              "doc-raft-consensus"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 89.65
+          },
+          {
+            "queryId": "Q02",
+            "query": "how do distributed nodes elect a leader after heartbeat timeout",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-raft-consensus"
+            ],
+            "topDocIds": [
+              "doc-raft-consensus",
+              "doc-linux-epoll",
+              "doc-b-tree-indexing",
+              "doc-garbage-collection",
+              "doc-cache-invalidation"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 86.04
+          },
+          {
+            "queryId": "Q03",
+            "query": "concurrent readers non-blocking during database write commits",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-sqlite-wal"
+            ],
+            "topDocIds": [
+              "doc-sqlite-wal",
+              "doc-b-tree-indexing",
+              "doc-raft-consensus",
+              "doc-cache-invalidation",
+              "doc-linux-epoll"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 85.15
+          },
+          {
+            "queryId": "Q04",
+            "query": "eliminating CPU to GPU buffer copy overhead on Apple chips",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-apple-metal-mem"
+            ],
+            "topDocIds": [
+              "doc-apple-metal-mem",
+              "doc-ann-vector-index",
+              "doc-garbage-collection",
+              "doc-linux-epoll",
+              "doc-compiler-jit"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 85.9
+          },
+          {
+            "queryId": "Q05",
+            "query": "hierarchical graph index for fast cosine similarity search",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-ann-vector-index"
+            ],
+            "topDocIds": [
+              "doc-ann-vector-index",
+              "doc-b-tree-indexing",
+              "doc-raft-consensus",
+              "doc-garbage-collection",
+              "doc-apple-metal-mem"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 86.15
+          },
+          {
+            "queryId": "Q06",
+            "query": "preventing thundering herd when cached entries expire",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-cache-invalidation"
+            ],
+            "topDocIds": [
+              "doc-cache-invalidation",
+              "doc-garbage-collection",
+              "doc-sqlite-wal",
+              "doc-b-tree-indexing",
+              "doc-linux-epoll"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 83.37
+          },
+          {
+            "queryId": "Q07",
+            "query": "tradeoffs between write amplification in LSM trees vs B-trees",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-b-tree-indexing"
+            ],
+            "topDocIds": [
+              "doc-b-tree-indexing",
+              "doc-sqlite-wal",
+              "doc-raft-consensus",
+              "doc-ann-vector-index",
+              "doc-garbage-collection"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 87.73
+          },
+          {
+            "queryId": "Q08",
+            "query": "cryptographic key exchange with forward secrecy and 1-RTT latency",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-tls-handshake"
+            ],
+            "topDocIds": [
+              "doc-tls-handshake",
+              "doc-jwt-auth",
+              "doc-linux-epoll",
+              "doc-raft-consensus",
+              "doc-ann-vector-index"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 90.43
+          },
+          {
+            "queryId": "Q09",
+            "query": "ingredients and oven temperature for homemade chocolate cookies",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-cookie-recipe"
+            ],
+            "topDocIds": [
+              "doc-cookie-recipe",
+              "doc-ann-vector-index",
+              "doc-apple-metal-mem",
+              "doc-startup-fundraising",
+              "doc-vacation-policy"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 85.82
+          },
+          {
+            "queryId": "Q10",
+            "query": "employee paid time off accrual rules and request notice window",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-vacation-policy"
+            ],
+            "topDocIds": [
+              "doc-vacation-policy",
+              "doc-linux-epoll",
+              "doc-raft-consensus",
+              "doc-ann-vector-index",
+              "doc-sqlite-wal"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 87.57
+          }
+        ]
+      },
+      "hybrid": {
+        "recallAt1": 1,
+        "recallAt3": 1,
+        "recallAt5": 1,
+        "mrr": 1,
+        "ndcgAt5": 1,
+        "avgLatencyMs": 91.16,
+        "p50LatencyMs": 91.17,
+        "p95LatencyMs": 95.35,
+        "queryDetails": [
+          {
+            "queryId": "Q01",
+            "query": "HTTP header versus URI path versioning for web APIs",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-api-versioning"
+            ],
+            "topDocIds": [
+              "doc-api-versioning",
+              "doc-jwt-auth",
+              "doc-tls-handshake",
+              "doc-ann-vector-index",
+              "doc-garbage-collection"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 95.35
+          },
+          {
+            "queryId": "Q02",
+            "query": "how do distributed nodes elect a leader after heartbeat timeout",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-raft-consensus"
+            ],
+            "topDocIds": [
+              "doc-raft-consensus",
+              "doc-linux-epoll",
+              "doc-garbage-collection",
+              "doc-cache-invalidation",
+              "doc-b-tree-indexing"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 88.84
+          },
+          {
+            "queryId": "Q03",
+            "query": "concurrent readers non-blocking during database write commits",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-sqlite-wal"
+            ],
+            "topDocIds": [
+              "doc-sqlite-wal",
+              "doc-b-tree-indexing",
+              "doc-raft-consensus",
+              "doc-cache-invalidation",
+              "doc-phoenix-launch"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 90.92
+          },
+          {
+            "queryId": "Q04",
+            "query": "eliminating CPU to GPU buffer copy overhead on Apple chips",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-apple-metal-mem"
+            ],
+            "topDocIds": [
+              "doc-apple-metal-mem",
+              "doc-garbage-collection",
+              "doc-linux-epoll",
+              "doc-tls-handshake",
+              "doc-sqlite-wal"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 90.28
+          },
+          {
+            "queryId": "Q05",
+            "query": "hierarchical graph index for fast cosine similarity search",
+            "category": "medium",
+            "expectedDocIds": [
+              "doc-ann-vector-index"
+            ],
+            "topDocIds": [
+              "doc-ann-vector-index",
+              "doc-b-tree-indexing",
+              "doc-raft-consensus",
+              "doc-garbage-collection",
+              "doc-linux-epoll"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 92.42
+          },
+          {
+            "queryId": "Q06",
+            "query": "preventing thundering herd when cached entries expire",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-cache-invalidation"
+            ],
+            "topDocIds": [
+              "doc-cache-invalidation",
+              "doc-garbage-collection",
+              "doc-linux-epoll",
+              "doc-sqlite-wal",
+              "doc-raft-consensus"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 89.92
+          },
+          {
+            "queryId": "Q07",
+            "query": "tradeoffs between write amplification in LSM trees vs B-trees",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-b-tree-indexing"
+            ],
+            "topDocIds": [
+              "doc-b-tree-indexing",
+              "doc-sqlite-wal",
+              "doc-raft-consensus",
+              "doc-garbage-collection",
+              "doc-tls-handshake"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 91.37
+          },
+          {
+            "queryId": "Q08",
+            "query": "cryptographic key exchange with forward secrecy and 1-RTT latency",
+            "category": "hard",
+            "expectedDocIds": [
+              "doc-tls-handshake"
+            ],
+            "topDocIds": [
+              "doc-tls-handshake",
+              "doc-jwt-auth",
+              "doc-linux-epoll",
+              "doc-raft-consensus",
+              "doc-sqlite-wal"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 92.08
+          },
+          {
+            "queryId": "Q09",
+            "query": "ingredients and oven temperature for homemade chocolate cookies",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-cookie-recipe"
+            ],
+            "topDocIds": [
+              "doc-cookie-recipe",
+              "doc-apple-metal-mem",
+              "doc-startup-fundraising",
+              "doc-vacation-policy",
+              "doc-tls-handshake"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 89.25
+          },
+          {
+            "queryId": "Q10",
+            "query": "employee paid time off accrual rules and request notice window",
+            "category": "easy",
+            "expectedDocIds": [
+              "doc-vacation-policy"
+            ],
+            "topDocIds": [
+              "doc-vacation-policy",
+              "doc-linux-epoll",
+              "doc-raft-consensus",
+              "doc-startup-fundraising",
+              "doc-api-versioning"
+            ],
+            "rank1": 1,
+            "hitAt5": true,
+            "latencyMs": 91.17
+          }
+        ]
+      }
+    }
+  },
+  "unfulfilled_release_gates": [
+    "MLX 4B concurrent interactive latency under bulk load (642.06ms) violates <=200.0ms target; hardware/driver bounds remain unproven.",
+    "1000-batch sustained load memory test unfulfilled for live promotion.",
+    "Full-corpus evaluation (MS MARCO/BEIR) pending; small public fixture results labeled as Preliminary Release Smoke.",
+    "GGUF stage explicitly BLOCKED pending supervised integration.",
+    "Fresh-process crash recovery across OS boundaries marked pending; only in-process checkpoint recovery verified."
+  ],
+  "corpus": {
+    "totalDocs": 16,
+    "totalQueries": 10,
+    "docIds": [
+      "doc-api-versioning",
+      "doc-raft-consensus",
+      "doc-sqlite-wal",
+      "doc-apple-metal-mem",
+      "doc-ann-vector-index",
+      "doc-cache-invalidation",
+      "doc-b-tree-indexing",
+      "doc-jwt-auth",
+      "doc-compiler-jit",
+      "doc-linux-epoll",
+      "doc-tls-handshake",
+      "doc-garbage-collection",
+      "doc-cookie-recipe",
+      "doc-vacation-policy",
+      "doc-startup-fundraising",
+      "doc-phoenix-launch"
+    ]
+  },
+  "recovery": {
+    "mode": "in_process_checkpoint",
+    "freshProcessRecovery": "pending",
+    "initialCancelledChunks": 2,
+    "resumedTotalChunks": 16,
+    "consecutiveSequenceVerified": true,
+    "mismatchErrorCaught": true,
+    "backupVectorCount": 16,
+    "backupDocCount": 16
+  },
+  "mcp_probe": {
+    "port": 57072,
+    "toolsCount": 4,
+    "searchResultCount": 0,
+    "firstResultDocId": "",
+    "getContentLength": 0
+  },
+  "memory_metrics": {
+    "active_mb": 2397.8,
+    "peak_mb": 3671.8,
+    "model_mb": 2159.4,
+    "residency_budget_mb": 16384.0,
+    "notes": "Resident weight budgets are not total activation memory guarantees."
+  },
+  "stats_metrics": {
+    "total_requests": 32,
+    "avg_ms": 326.22,
+    "compiled_shapes": 23,
+    "uptime_sec": 14.8,
+    "weights_loaded": true,
+    "idle_unload_s": 300.0
+  },
+  "duration_s": 16.448,
+  "supervision": {
+    "instance_token": "phase5-token-d07dff7943ae4b0b",
+    "stage": "phase5_qualification",
+    "model": "/Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine",
+    "port": 8797,
+    "control_port": 8798,
+    "timeout_s": 120.0,
+    "status": "failed",
+    "start_time": 1789075724.200924,
+    "checks": {
+      "server_ready": true
+    },
+    "metrics": {
+      "preflight_headroom_mb": 20143.5,
+      "startup_time_s": 4.009
+    },
+    "fixtures": {},
+    "errors": [
+      "TypeScript Phase 5 runner failed with exit code 1: QMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\nQMD_MLX_DTYPE/mlxDtype is deprecated and ignored: the MLX daemon serves pre-quantized weights (pick precision via the model repo, e.g. -4bit vs -8bit).\n"
+    ],
+    "telemetry_samples": [
+      {
+        "timestamp": 1789075724.23,
+        "elapsed_s": 0.04,
+        "rss_mb": null,
+        "swap_used_mb": null,
+        "swap_growth_mb": null,
+        "memory_free_pct": null
+      },
+      {
+        "timestamp": 1789075724.5,
+        "elapsed_s": 0.31,
+        "rss_mb": 65.640625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075724.77,
+        "elapsed_s": 0.58,
+        "rss_mb": 81.96875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075725.04,
+        "elapsed_s": 0.85,
+        "rss_mb": 85.078125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075725.31,
+        "elapsed_s": 1.13,
+        "rss_mb": 85.15625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075725.58,
+        "elapsed_s": 1.47,
+        "rss_mb": 89.59375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075725.93,
+        "elapsed_s": 1.75,
+        "rss_mb": 215.734375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075726.2,
+        "elapsed_s": 2.02,
+        "rss_mb": 240.578125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075726.47,
+        "elapsed_s": 2.28,
+        "rss_mb": 279.09375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075726.75,
+        "elapsed_s": 2.57,
+        "rss_mb": 305.71875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075727.03,
+        "elapsed_s": 2.84,
+        "rss_mb": 684.171875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 75.0
+      },
+      {
+        "timestamp": 1789075727.3,
+        "elapsed_s": 3.11,
+        "rss_mb": 1515.203125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075727.57,
+        "elapsed_s": 3.42,
+        "rss_mb": 2633.1875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 76.0
+      },
+      {
+        "timestamp": 1789075727.88,
+        "elapsed_s": 3.74,
+        "rss_mb": 2767.984375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 75.0
+      },
+      {
+        "timestamp": 1789075728.2,
+        "elapsed_s": 4.02,
+        "rss_mb": 2724.515625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 66.0
+      },
+      {
+        "timestamp": 1789075728.48,
+        "elapsed_s": 4.29,
+        "rss_mb": 2725.25,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 63.0
+      },
+      {
+        "timestamp": 1789075728.75,
+        "elapsed_s": 4.57,
+        "rss_mb": 2725.578125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 62.0
+      },
+      {
+        "timestamp": 1789075729.03,
+        "elapsed_s": 4.84,
+        "rss_mb": 2725.875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 60.0
+      },
+      {
+        "timestamp": 1789075729.3,
+        "elapsed_s": 5.12,
+        "rss_mb": 2725.875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 60.0
+      },
+      {
+        "timestamp": 1789075729.58,
+        "elapsed_s": 5.39,
+        "rss_mb": 2726.25,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 57.0
+      },
+      {
+        "timestamp": 1789075729.85,
+        "elapsed_s": 5.67,
+        "rss_mb": 2726.25,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075730.13,
+        "elapsed_s": 5.95,
+        "rss_mb": 2726.453125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075730.4,
+        "elapsed_s": 6.22,
+        "rss_mb": 2726.453125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075730.68,
+        "elapsed_s": 6.49,
+        "rss_mb": 2726.734375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075730.95,
+        "elapsed_s": 6.76,
+        "rss_mb": 2726.734375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075731.22,
+        "elapsed_s": 7.03,
+        "rss_mb": 2727.015625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075731.49,
+        "elapsed_s": 7.3,
+        "rss_mb": 2727.015625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075731.75,
+        "elapsed_s": 7.57,
+        "rss_mb": 2727.1875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 57.0
+      },
+      {
+        "timestamp": 1789075732.02,
+        "elapsed_s": 7.84,
+        "rss_mb": 2727.1875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075732.3,
+        "elapsed_s": 8.12,
+        "rss_mb": 2727.28125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 61.0
+      },
+      {
+        "timestamp": 1789075732.58,
+        "elapsed_s": 8.41,
+        "rss_mb": 2727.28125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 61.0
+      },
+      {
+        "timestamp": 1789075732.87,
+        "elapsed_s": 8.69,
+        "rss_mb": 2727.3125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 61.0
+      },
+      {
+        "timestamp": 1789075733.15,
+        "elapsed_s": 8.96,
+        "rss_mb": 2727.453125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 58.0
+      },
+      {
+        "timestamp": 1789075733.42,
+        "elapsed_s": 9.23,
+        "rss_mb": 2727.453125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 60.0
+      },
+      {
+        "timestamp": 1789075733.69,
+        "elapsed_s": 9.5,
+        "rss_mb": 2727.453125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 61.0
+      },
+      {
+        "timestamp": 1789075733.96,
+        "elapsed_s": 9.78,
+        "rss_mb": 2727.609375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075734.24,
+        "elapsed_s": 10.06,
+        "rss_mb": 2727.59375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075734.52,
+        "elapsed_s": 10.35,
+        "rss_mb": 2727.59375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075734.81,
+        "elapsed_s": 10.63,
+        "rss_mb": 2727.71875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 57.0
+      },
+      {
+        "timestamp": 1789075735.09,
+        "elapsed_s": 10.9,
+        "rss_mb": 2727.71875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075735.35,
+        "elapsed_s": 11.17,
+        "rss_mb": 2727.71875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 60.0
+      },
+      {
+        "timestamp": 1789075735.63,
+        "elapsed_s": 11.44,
+        "rss_mb": 2727.734375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 62.0
+      },
+      {
+        "timestamp": 1789075735.9,
+        "elapsed_s": 11.75,
+        "rss_mb": 2727.90625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 59.0
+      },
+      {
+        "timestamp": 1789075736.21,
+        "elapsed_s": 12.03,
+        "rss_mb": 2452.0625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 54.0
+      },
+      {
+        "timestamp": 1789075736.48,
+        "elapsed_s": 12.29,
+        "rss_mb": 2452.28125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 52.0
+      },
+      {
+        "timestamp": 1789075736.75,
+        "elapsed_s": 12.8,
+        "rss_mb": 2454.6875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 44.0
+      },
+      {
+        "timestamp": 1789075737.26,
+        "elapsed_s": 13.09,
+        "rss_mb": 2454.6875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 43.0
+      },
+      {
+        "timestamp": 1789075737.55,
+        "elapsed_s": 13.37,
+        "rss_mb": 2461.59375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 43.0
+      },
+      {
+        "timestamp": 1789075737.83,
+        "elapsed_s": 13.64,
+        "rss_mb": 2463.359375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 45.0
+      },
+      {
+        "timestamp": 1789075738.1,
+        "elapsed_s": 13.92,
+        "rss_mb": 2464.9375,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 45.0
+      },
+      {
+        "timestamp": 1789075738.37,
+        "elapsed_s": 14.19,
+        "rss_mb": 2465.953125,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 46.0
+      },
+      {
+        "timestamp": 1789075738.65,
+        "elapsed_s": 14.48,
+        "rss_mb": 2466.140625,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 46.0
+      },
+      {
+        "timestamp": 1789075738.93,
+        "elapsed_s": 14.75,
+        "rss_mb": 2466.46875,
+        "swap_used_mb": 3765.94,
+        "swap_growth_mb": 0.03999999999996362,
+        "memory_free_pct": 45.0
+      }
+    ],
+    "captured_logs": "[mlx-server] Inference server: http://127.0.0.1:8797 | Control server: http://127.0.0.1:8798\n[mlx-server] Model: /Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine | Dtype: float32 | MaxLength: 2048 | InstanceToken: phase5-token-d07dff7943ae4b0b\n[mlx-qwen] Loaded '/Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine' \u2713 (2560d, 4.0B params, 2159.4MB, last_token pooling) in 3.54s\n[mlx-runtime] Running GPU warmup...\n[mlx-runtime] GPU warmup complete in 0.18s\n[mlx-server] Server ready (primary='/Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine') on http://127.0.0.1:8797 (control: http://127.0.0.1:8798)\n",
+    "child_cleanup": {
+      "cleaned": true,
+      "pid": 10473,
+      "exit_code": 0,
+      "sigkill_used": false
+    },
+    "preflight": {
+      "timestamp": 1789075724.200929,
+      "host": "127.0.0.1",
+      "port": 8797,
+      "control_port": 8798,
+      "stage": "phase5_qualification",
+      "model": "/Users/shersingh/.cache/qmd/models/qwen3-embedding-4b-mlx-4bit-affine",
+      "installed_ram_mb": 32768.0,
+      "headroom_mb": 20143.5,
+      "swap_used_mb": 3765.9,
+      "free_memory_pct": 76.0,
+      "watchdog_defaults": {
+        "installed_ram_mb": 32768.0,
+        "headroom_mb": 20143.484375,
+        "max_rss_mb": 8192.0,
+        "max_swap_growth_mb": 2048.0,
+        "min_free_memory_pct": 12.0,
+        "health_timeout_s": 3.0,
+        "consecutive_health_failures": 3,
+        "check_interval_s": 1.0,
+        "grace_period_s": 3.0,
+        "startup_grace_period_s": 30.0,
+        "stalled_inference_timeout_s": 60.0
+      }
+    },
+    "child_pid": 10473,
+    "duration_s": 16.435
+  }
+}

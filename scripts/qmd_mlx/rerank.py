@@ -4,6 +4,8 @@ rerank.py — MLX-native Reranker Adapter for Qwen3-Reranker Models
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -24,6 +26,64 @@ try:
     _MLX_AVAILABLE = True
 except ImportError:
     _MLX_AVAILABLE = False
+
+
+def infer_quantization_and_dtype(
+    model_name_or_path: str,
+    default_quant: Optional[str] = None,
+    default_dtype: Optional[str] = None,
+) -> tuple[str, str]:
+    """
+    Infers exact quantization format and compute dtype from local config.json or model naming.
+    Never silently assumes or misnames quantization.
+    """
+    expanded = os.path.expanduser(model_name_or_path)
+    quant_str = default_quant
+    dtype_str = default_dtype or "bfloat16"
+
+    if os.path.isdir(expanded):
+        cfg_file = os.path.join(expanded, "config.json")
+        if os.path.isfile(cfg_file):
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                quant = cfg.get("quantization") or cfg.get("quantization_config")
+                if isinstance(quant, dict):
+                    bits = quant.get("bits")
+                    mode = quant.get("mode")
+                    if bits == 4:
+                        quant_str = f"4bit-{mode}" if mode else "4bit"
+                    elif bits == 8:
+                        quant_str = f"8bit-{mode}" if mode else "8bit"
+                    elif quant.get("quant_type"):
+                        quant_str = str(quant["quant_type"])
+                    elif quant.get("bits"):
+                        quant_str = f"{quant['bits']}bit"
+                elif isinstance(quant, str):
+                    quant_str = quant
+
+                dtype_cfg = cfg.get("torch_dtype") or cfg.get("dtype")
+                if dtype_cfg:
+                    dtype_str = str(dtype_cfg)
+            except Exception:
+                pass
+
+    if not quant_str:
+        norm_name = os.path.basename(expanded).lower()
+        if "4bit" in norm_name or "q4" in norm_name:
+            quant_str = "4bit"
+        elif "8bit" in norm_name or "q8" in norm_name:
+            quant_str = "8bit"
+        elif "mxfp8" in norm_name or "fp8" in norm_name:
+            quant_str = "mxfp8"
+        elif "fp16" in norm_name:
+            quant_str = "fp16"
+        elif "bf16" in norm_name:
+            quant_str = "bf16"
+        else:
+            quant_str = "mxfp8"
+
+    return quant_str, dtype_str
 
 
 class RerankError(MLXServerError):
@@ -50,8 +110,8 @@ class MLXRerankAdapter:
     def __init__(
         self,
         model_name: str = "mlx-community/Qwen3-Reranker-4B-mxfp8",
-        quantization: str = "mxfp8",
-        dtype_str: str = "bfloat16",
+        quantization: Optional[str] = None,
+        dtype_str: Optional[str] = None,
         max_length: int = 2048,
         revision: Optional[str] = None,
         lazy_load: bool = False,
@@ -62,8 +122,9 @@ class MLXRerankAdapter:
             raise ModelUnavailableError("MLX or mlx-lm is not installed.")
 
         self.model_name = model_name
-        self.quantization = quantization
-        self.dtype_str = dtype_str
+        inferred_quant, inferred_dtype = infer_quantization_and_dtype(model_name, quantization, dtype_str)
+        self.quantization = inferred_quant
+        self.dtype_str = inferred_dtype
         self.max_length = max_length
         self.revision = revision
         self.executor = executor

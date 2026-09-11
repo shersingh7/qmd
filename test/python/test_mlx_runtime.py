@@ -802,3 +802,133 @@ def test_lazy_load_planner_retuning_and_oom_preservation():
 
     runtime.shutdown()
     executor.shutdown()
+
+
+def test_bulk_microbatch_yield_to_interactive_query():
+    """
+    Regression Barrier Test:
+    Verifies that a multi-document bulk embedding request (split into micro-batches with priority 1)
+    yields at micro-batch boundaries to an interactive query (priority 0) arriving concurrently.
+    Verifies that:
+    1. The interactive query is serviced between bulk micro-batches (not stuck waiting for full bulk completion).
+    2. The bulk job completes in full with original ordering preserved (zero token truncation).
+    3. The interactive query returns valid normalized results.
+    """
+    executor = GPUExecutor(max_queue_size=20)
+    manager = ModelResidencyManager(executor, residency_budget_mb=6000.0)
+
+    class InterleavingMockAdapter(MockEmbeddingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.call_log: list[str] = []
+            self.first_bulk_batch_started = threading.Event()
+            self.interactive_query_finished = threading.Event()
+
+        def tokenize_texts(self, texts, max_length=None):
+            # Create distinct token lengths so planner splits them into micro-batches
+            token_ids = [[i + 1] * (100 if i % 2 == 0 else 120) for i, _ in enumerate(texts)]
+            lengths = [len(t) for t in token_ids]
+            indices = list(range(len(texts)))
+            return TokenizedBatch(token_ids, lengths, indices, pad_token_id=0, texts=list(texts))
+
+        def forward_batch(self, batch, requested_dims=None):
+            dims = requested_dims or self.native_dims
+            count = len(batch)
+            is_query = "urgent query" in str(getattr(batch, "texts", []))
+            tag = "query" if is_query else f"bulk_{count}"
+            self.call_log.append(tag)
+
+            if not is_query and len(self.call_log) == 1:
+                # First bulk micro-batch
+                self.first_bulk_batch_started.set()
+                # Yield CPU briefly so interactive query thread can enqueue into GPUExecutor priority queue
+                time.sleep(0.05)
+
+            # Return identifiable unique array rows
+            arr = np.zeros((count, dims), dtype=np.float32)
+            for idx, orig_idx in enumerate(batch.original_indices):
+                arr[idx, 0] = float(orig_idx + 1)
+                arr[idx, 1:] = 0.1
+            arr = arr / np.linalg.norm(arr, axis=-1, keepdims=True)
+            return arr
+
+    mock_adapter = InterleavingMockAdapter()
+    with patch("scripts.qmd_mlx.runtime.resolve_embedding_adapter", return_value=mock_adapter):
+        runtime = MLXEmbeddingRuntime(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            executor=executor,
+            model_manager=manager,
+            lazy_load=False,
+        )
+
+    # Force micro-batch token budget so 4 texts split into multiple micro-batches
+    runtime.batch_planner.max_bulk_microbatch_tokens = 150
+    runtime.batch_planner.max_batch_tokens = 150
+
+    bulk_texts = [
+        "Bulk document 0 with sufficient token length",
+        "Bulk document 1 with sufficient token length",
+        "Bulk document 2 with sufficient token length",
+        "Bulk document 3 with sufficient token length",
+    ]
+    query_text = ["Interactive urgent query text"]
+
+    bulk_output: list[Optional[np.ndarray]] = [None]
+    query_output: list[Optional[np.ndarray]] = [None]
+    bulk_error: list[Optional[Exception]] = [None]
+    query_error: list[Optional[Exception]] = [None]
+
+    def run_bulk():
+        try:
+            res = runtime.submit_embed(bulk_texts, is_query=False)
+            bulk_output[0] = res
+        except Exception as e:
+            bulk_error[0] = e
+
+    def run_query():
+        try:
+            assert mock_adapter.first_bulk_batch_started.wait(timeout=2.0)
+            res = runtime.submit_embed(query_text, is_query=True)
+            query_output[0] = res
+            mock_adapter.interactive_query_finished.set()
+        except Exception as e:
+            query_error[0] = e
+
+    t_bulk = threading.Thread(target=run_bulk, name="BulkThread")
+    t_query = threading.Thread(target=run_query, name="QueryThread")
+
+    t_bulk.start()
+    t_query.start()
+
+    t_bulk.join(timeout=5.0)
+    t_query.join(timeout=5.0)
+
+    assert bulk_error[0] is None, f"Bulk error: {bulk_error[0]}"
+    assert query_error[0] is None, f"Query error: {query_error[0]}"
+
+    assert bulk_output[0] is not None
+    assert query_output[0] is not None
+
+    # Verify call sequence: query was serviced between bulk micro-batches!
+    # Expected call_log starts with bulk, has query before final bulk batches
+    assert "query" in mock_adapter.call_log
+    query_call_idx = mock_adapter.call_log.index("query")
+    assert query_call_idx > 0, "Query should start after first bulk micro-batch"
+    assert query_call_idx < len(mock_adapter.call_log) - 1, "Query should finish before remaining bulk micro-batches"
+
+    # Verify bulk output shape and strict original ordering preservation
+    bulk_res = bulk_output[0]
+    assert bulk_res.shape == (4, 384)
+    for i in range(4):
+        assert np.isfinite(bulk_res[i]).all()
+        assert np.isclose(np.linalg.norm(bulk_res[i]), 1.0, atol=1e-5)
+    assert bulk_res[0, 0] < bulk_res[1, 0] < bulk_res[2, 0] < bulk_res[3, 0]
+
+    # Verify query output
+    query_res = query_output[0]
+    assert query_res.shape == (1, 384)
+    assert np.isfinite(query_res).all()
+    assert np.isclose(np.linalg.norm(query_res[0]), 1.0, atol=1e-5)
+
+    runtime.shutdown()
+    executor.shutdown()

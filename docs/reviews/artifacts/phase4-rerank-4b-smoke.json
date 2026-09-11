@@ -1,0 +1,46 @@
+{
+  "instance_token": "rerank-smoke-9c82f9b47c2c",
+  "model_path": "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
+  "port": 8797,
+  "control_port": 8798,
+  "timeout_s": 60.0,
+  "status": "passed",
+  "checks": {
+    "server_ready": true,
+    "dynamic_token_resolution": true,
+    "ranking_discrimination": true,
+    "singleton_batch_consistency": true,
+    "invalid_input_rejection": true,
+    "max_length_rejection": true
+  },
+  "metrics": {
+    "preflight_headroom_mb": 12773.8,
+    "startup_time_s": 4.388,
+    "fixture_p50_ms": 950.78,
+    "batch_4docs_latency_ms": 1264.89,
+    "memory": {
+      "active_mb": 2159.4,
+      "peak_mb": 2159.4,
+      "model_mb": 2159.4
+    },
+    "stats": {
+      "total_requests": 5,
+      "total_pairs_scored": 10,
+      "avg_ms": 828.86,
+      "stage": "rerank"
+    }
+  },
+  "errors": [],
+  "descriptor": {
+    "version": 1,
+    "backend": "mlx",
+    "model": "/Users/shersingh/.cache/qmd/models/qwen3-reranker-4b-mlx-4bit",
+    "revision": "",
+    "quantization": "mxfp8",
+    "dtype": "bfloat16",
+    "maxTokens": 2048,
+    "yesTokenId": 9693,
+    "noTokenId": 2152
+  },
+  "total_duration_s": 7.671
+}
